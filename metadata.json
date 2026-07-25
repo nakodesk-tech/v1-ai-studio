@@ -1,0 +1,6 @@
+{
+  "name": "EduData Sync",
+  "description": "School data collection system for Officers and Headmasters with form builder, Excel import, Google Drive/Sheets API sync, PDF/Excel reports, and real-time dashboard analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

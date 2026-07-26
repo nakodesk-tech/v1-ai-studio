@@ -26,6 +26,9 @@ interface SchoolDao {
 
     @Query("DELETE FROM schools WHERE LOWER(id) = LOWER(:schoolId)")
     suspend fun deleteSchool(schoolId: String)
+
+    @Query("DELETE FROM schools WHERE id NOT IN (:validIds)")
+    suspend fun deleteSchoolsNotIn(validIds: List<String>)
 }
 
 @Dao
@@ -150,6 +153,9 @@ interface UserDao {
     @Query("SELECT * FROM users WHERE LOWER(udiseCode) = LOWER(:udiseCode) LIMIT 1")
     suspend fun getUserByUdise(udiseCode: String): UserEntity?
 
+    @Query("SELECT * FROM users WHERE LOWER(email) = LOWER(:email) LIMIT 1")
+    suspend fun getUserByEmail(email: String): UserEntity?
+
     @Query("SELECT * FROM users WHERE LOWER(udiseCode) = LOWER(:udiseCode) AND passwordHash = :password LIMIT 1")
     suspend fun login(udiseCode: String, password: String): UserEntity?
 
@@ -168,6 +174,9 @@ interface UserDao {
     @Query("DELETE FROM users WHERE LOWER(udiseCode) = LOWER(:udiseCode)")
     suspend fun deleteUser(udiseCode: String)
 
-    @Query("UPDATE users SET headmasterName = :name, phone = :phone, email = :email, schoolName = :schoolName WHERE LOWER(udiseCode) = LOWER(:udiseCode)")
-    suspend fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String)
+    @Query("UPDATE users SET headmasterName = :name, phone = :phone, email = :email, schoolName = :schoolName, udiseNumber = :udiseNumber WHERE LOWER(udiseCode) = LOWER(:udiseCode)")
+    suspend fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String)
+
+    @Query("DELETE FROM users WHERE udiseCode NOT IN (:validIds)")
+    suspend fun deleteUsersNotIn(validIds: List<String>)
 }

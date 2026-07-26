@@ -77,11 +77,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _events = MutableSharedFlow<UIEvent>()
     val events: SharedFlow<UIEvent> = _events.asSharedFlow()
 
+    private val _isSyncingUsers = MutableStateFlow(false)
+    val isSyncingUsers: StateFlow<Boolean> = _isSyncingUsers.asStateFlow()
+
+    fun syncUsers(onSuccess: () -> Unit = {}, onError: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            _isSyncingUsers.value = true
+            val result = repository.syncUsersFromSupabase()
+            _isSyncingUsers.value = false
+            if (result.isSuccess) {
+                _events.emit(UIEvent.ShowToast("Users synced successfully"))
+                onSuccess()
+            } else {
+                val msg = result.exceptionOrNull()?.message ?: "Failed to sync users"
+                _events.emit(UIEvent.ShowToast("Sync error: $msg"))
+                onError(msg)
+            }
+        }
+    }
+
     init {
         viewModelScope.launch {
             allSchools.collect { schools ->
                 if (_selectedSchool.value == null && schools.isNotEmpty()) {
                     _selectedSchool.value = schools.first()
+                }
+            }
+        }
+        // Requirement 10: Check existing session and re-verify public.profiles on startup
+        viewModelScope.launch {
+            val restoreResult = repository.validateAndRestoreSession()
+            val user = restoreResult.getOrNull()
+            if (user != null) {
+                val effectiveRole = if (user.role.equals("OFFICER", ignoreCase = true)) UserRole.OFFICER else UserRole.HEADMASTER
+                _currentUser.value = user
+                _userRole.value = effectiveRole
+                _isLoggedIn.value = true
+                if (effectiveRole == UserRole.OFFICER) {
+                    syncUsers()
                 }
             }
         }
@@ -279,42 +312,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun login(
-        udiseCode: String,
+        emailOrUdise: String,
         password: String,
-        role: UserRole,
         onSuccess: () -> Unit,
         onError: (String) -> Unit
     ) {
         viewModelScope.launch {
-            if (udiseCode.isBlank() || password.isBlank()) {
-                onError("Please enter UDISE Code / User ID and Password.")
+            if (emailOrUdise.isBlank() || password.isBlank()) {
+                onError("Please enter Email ID and Password.")
                 return@launch
             }
-            val user = repository.loginUser(udiseCode, password)
+            val result = repository.loginUserWithSupabase(emailOrUdise, password)
+            val user = result.getOrNull()
             if (user != null) {
-                val expectedRoleStr = if (role == UserRole.OFFICER) "OFFICER" else "HEADMASTER"
-                if (!user.role.equals(expectedRoleStr, ignoreCase = true)) {
-                    val actualRoleDisplay = if (user.role.equals("OFFICER", ignoreCase = true)) "Officer" else "Headmaster / School"
-                    val selectedRoleDisplay = if (role == UserRole.OFFICER) "Officer" else "Headmaster / School"
-                    onError("Role Mismatch: This account is registered as '$actualRoleDisplay', but you selected '$selectedRoleDisplay'. Please select '$actualRoleDisplay' in the dropdown.")
-                    return@launch
-                }
+                // Determine user role strictly from validated public.profiles role
+                val effectiveRole = if (user.role.equals("OFFICER", ignoreCase = true)) UserRole.OFFICER else UserRole.HEADMASTER
 
                 _currentUser.value = user
                 _isLoggedIn.value = true
-                _userRole.value = role
+                _userRole.value = effectiveRole
 
                 // Find matching school if Headmaster
                 val schools = allSchools.value
                 val matched = schools.find { it.id.equals(user.udiseCode, ignoreCase = true) }
                 if (matched != null) {
                     _selectedSchool.value = matched
+                } else if (effectiveRole == UserRole.HEADMASTER) {
+                    val newSchool = SchoolEntity(
+                        id = user.udiseCode,
+                        name = user.schoolName,
+                        category = "Secondary",
+                        district = "Central District",
+                        headmasterName = user.headmasterName,
+                        headmasterPhone = user.phone,
+                        email = user.email
+                    )
+                    _selectedSchool.value = newSchool
                 }
 
-                _events.emit(UIEvent.ShowToast("Welcome, ${user.headmasterName}! Logged in as ${role.name}."))
+                val portalTitle = if (effectiveRole == UserRole.OFFICER) "District Officer Portal" else "School Portal"
+                if (effectiveRole == UserRole.OFFICER) {
+                    syncUsers()
+                }
+                _events.emit(UIEvent.ShowToast("Welcome, ${user.headmasterName}! Logged in to $portalTitle."))
                 onSuccess()
             } else {
-                onError("Invalid credentials. Please verify your UDISE Code / ID and Password.")
+                val errMessage = result.exceptionOrNull()?.message ?: "Invalid credentials or Supabase Auth error."
+                onError(errMessage)
             }
         }
     }
@@ -343,12 +387,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
-            val existing = repository.getUserByUdise(udiseCode)
-            if (existing != null) {
-                onError("A account with UDISE code '$udiseCode' is already registered. Please sign in.")
-                return@launch
-            }
-
             val roleString = if (role == UserRole.OFFICER) "OFFICER" else "HEADMASTER"
             val newUser = UserEntity(
                 udiseCode = udiseCode.trim().uppercase(),
@@ -360,25 +398,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 email = email.trim()
             )
 
-            repository.registerUser(newUser)
+            val regResult = repository.registerUserWithSupabase(newUser)
+            if (regResult.isFailure) {
+                val err = regResult.exceptionOrNull()?.message ?: "Registration failed."
+                onError(err)
+                return@launch
+            }
+
+            val registeredUser = regResult.getOrDefault(newUser)
 
             // Auto log in after registration
-            _currentUser.value = newUser
+            _currentUser.value = registeredUser
             _isLoggedIn.value = true
             _userRole.value = role
 
             val newSchool = SchoolEntity(
-                id = newUser.udiseCode,
-                name = newUser.schoolName,
+                id = registeredUser.udiseCode,
+                name = registeredUser.schoolName,
                 category = "Secondary",
                 district = "Central District",
-                headmasterName = newUser.headmasterName,
-                headmasterPhone = newUser.phone,
-                email = newUser.email
+                headmasterName = registeredUser.headmasterName,
+                headmasterPhone = registeredUser.phone,
+                email = registeredUser.email
             )
             _selectedSchool.value = newSchool
 
-            _events.emit(UIEvent.ShowToast("School UDISE registered successfully!"))
+            _events.emit(UIEvent.ShowToast("Registered in Supabase Auth successfully!"))
             onSuccess()
         }
     }
@@ -448,9 +493,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String) {
+    fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String = "") {
         viewModelScope.launch {
-            repository.updateUserInfo(udiseCode, name, phone, email, schoolName)
+            repository.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
             _events.emit(UIEvent.ShowToast("User details updated for $udiseCode."))
         }
     }
@@ -486,6 +531,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isLoggedIn.value = false
         _currentUser.value = null
         viewModelScope.launch {
+            repository.logoutUser()
             _events.emit(UIEvent.ShowToast("Logged out successfully."))
         }
     }

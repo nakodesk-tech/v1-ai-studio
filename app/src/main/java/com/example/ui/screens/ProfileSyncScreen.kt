@@ -44,17 +44,23 @@ fun ProfileSyncScreen(
     syncConfig: SyncConfigEntity,
     currentUser: UserEntity? = null,
     allUsers: List<UserEntity> = emptyList(),
+    isSyncingUsers: Boolean = false,
+    onSyncUsers: () -> Unit = {},
     onSaveSyncConfig: (String, String, String, Boolean) -> Unit,
     onRegisterOfficer: (officerId: String, fullName: String, designation: String, phone: String, email: String, password: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _ -> },
     onRegisterSchool: (udiseCode: String, schoolName: String, hmName: String, phone: String, email: String, password: String, role: UserRole, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
     onChangePassword: (oldPass: String, newPass: String, confirmPass: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _ -> },
     onResetUserPassword: (udiseCode: String) -> Unit = {},
     onDeleteUser: (udiseCode: String) -> Unit = {},
-    onUpdateUserInfo: (udiseCode: String, name: String, phone: String, email: String, schoolName: String) -> Unit = { _, _, _, _, _ -> },
+    onUpdateUserInfo: (udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String) -> Unit = { _, _, _, _, _, _ -> },
     onLogout: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
+
+    LaunchedEffect(Unit) {
+        onSyncUsers()
+    }
 
     // Config states for Officer
     var driveEmail by remember(syncConfig) { mutableStateOf(syncConfig.officerDriveEmail) }
@@ -372,7 +378,9 @@ fun ProfileSyncScreen(
 
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // BUTTON 3: MANAGE REGISTERED USERS
+                        val registeredUserCount = remember(allUsers) { allUsers.count { it.role != "OFFICER" } }
+
+                        // BUTTON 3: MANAGE REGISTERED USERS WITH SYNC & DYNAMIC USER COUNT
                         Button(
                             onClick = { showManageUsersDialog = true },
                             modifier = Modifier
@@ -383,9 +391,60 @@ fun ProfileSyncScreen(
                             shape = RoundedCornerShape(16.dp),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
                         ) {
-                            Icon(Icons.Filled.Group, contentDescription = "Manage Users")
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Manage Registered Users (${allUsers.size})", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White, textAlign = TextAlign.Center)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Filled.Group, contentDescription = "Manage Users", tint = Color.White)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "Manage Registered Users",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.White
+                                    )
+                                }
+
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Surface(
+                                        color = ForestDarkGreen,
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Text(
+                                            text = "$registeredUserCount Users",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = Color.White,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.width(6.dp))
+
+                                    IconButton(
+                                        onClick = { onSyncUsers() },
+                                        enabled = !isSyncingUsers,
+                                        modifier = Modifier.size(32.dp).testTag("btn_refresh_registered_users")
+                                    ) {
+                                        if (isSyncingUsers) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                color = Color.White,
+                                                strokeWidth = 2.dp
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Filled.Refresh,
+                                                contentDescription = "Sync Users from Supabase",
+                                                tint = Color.White,
+                                                modifier = Modifier.size(20.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -923,11 +982,35 @@ fun ProfileSyncScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column {
-                        Text("All Registered Users (${allUsers.size})", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        Text("Registered by Officer & School HM Users", fontSize = 11.sp, color = TextSecondary)
+                        val registeredUserCountInDialog = allUsers.count { it.role != "OFFICER" }
+                        Text("Registered Users ($registeredUserCountInDialog)", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text("Source: Supabase Profiles", fontSize = 11.sp, color = TextSecondary)
                     }
-                    IconButton(onClick = { showManageUsersDialog = false }) {
-                        Icon(Icons.Filled.Close, contentDescription = "Close")
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(
+                            onClick = { onSyncUsers() },
+                            enabled = !isSyncingUsers,
+                            modifier = Modifier.testTag("btn_dialog_refresh_users")
+                        ) {
+                            if (isSyncingUsers) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    color = ForestDarkGreen,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.Refresh,
+                                    contentDescription = "Refresh Users from Supabase",
+                                    tint = ForestDarkGreen
+                                )
+                            }
+                        }
+
+                        IconButton(onClick = { showManageUsersDialog = false }) {
+                            Icon(Icons.Filled.Close, contentDescription = "Close")
+                        }
                     }
                 }
             },
@@ -1001,7 +1084,8 @@ fun ProfileSyncScreen(
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
                                                 Text(usr.headmasterName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                                Text("${if (usr.role == "OFFICER") "OFFICER ID" else "UDISE"}: ${usr.udiseCode}", fontSize = 11.sp, color = ForestDarkGreen, fontWeight = FontWeight.Bold)
+                                                val displayUdise = usr.udiseNumber.ifBlank { usr.udiseCode }
+                                                Text("${if (usr.role == "OFFICER") "OFFICER ID" else "UDISE Number"}: $displayUdise", fontSize = 11.sp, color = ForestDarkGreen, fontWeight = FontWeight.Bold)
                                                 Text(usr.schoolName, fontSize = 11.sp, color = TextSecondary)
                                                 if (usr.email.isNotBlank()) {
                                                     Text("Email: ${usr.email}", fontSize = 11.sp, color = TextMuted)
@@ -1117,10 +1201,13 @@ fun ProfileSyncScreen(
             var editPhone by remember(usrToEdit) { mutableStateOf(usrToEdit.phone) }
             var editEmail by remember(usrToEdit) { mutableStateOf(usrToEdit.email) }
             var editSchoolName by remember(usrToEdit) { mutableStateOf(usrToEdit.schoolName) }
+            var editUdiseNumber by remember(usrToEdit) {
+                mutableStateOf(usrToEdit.udiseNumber.ifBlank { if (usrToEdit.udiseCode.length <= 15 && !usrToEdit.udiseCode.startsWith("0000")) usrToEdit.udiseCode else "" })
+            }
 
             AlertDialog(
                 onDismissRequest = { editingUser = null },
-                title = { Text("Edit User Information (${usrToEdit.udiseCode})", fontSize = 15.sp, fontWeight = FontWeight.Bold) },
+                title = { Text("Edit User Information", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
                 text = {
                     val dialogFieldColors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = TextDarkPrimary,
@@ -1133,19 +1220,56 @@ fun ProfileSyncScreen(
                         unfocusedContainerColor = SurfaceWhite
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedTextField(value = editName, onValueChange = { editName = it }, label = { Text("Full Name") }, singleLine = true, colors = dialogFieldColors)
-                        OutlinedTextField(value = editSchoolName, onValueChange = { editSchoolName = it }, label = { Text("School / Office Name") }, singleLine = true, colors = dialogFieldColors)
-                        OutlinedTextField(value = editPhone, onValueChange = { editPhone = it }, label = { Text("Phone") }, singleLine = true, colors = dialogFieldColors)
-                        OutlinedTextField(value = editEmail, onValueChange = { editEmail = it }, label = { Text("Email") }, singleLine = true, colors = dialogFieldColors)
+                        OutlinedTextField(
+                            value = editUdiseNumber,
+                            onValueChange = { editUdiseNumber = it },
+                            label = { Text("UDISE Number *") },
+                            singleLine = true,
+                            colors = dialogFieldColors,
+                            modifier = Modifier.fillMaxWidth().testTag("input_edit_udise")
+                        )
+                        OutlinedTextField(
+                            value = editName,
+                            onValueChange = { editName = it },
+                            label = { Text("Full Name *") },
+                            singleLine = true,
+                            colors = dialogFieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = editSchoolName,
+                            onValueChange = { editSchoolName = it },
+                            label = { Text("School / Office Name") },
+                            singleLine = true,
+                            colors = dialogFieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = editPhone,
+                            onValueChange = { editPhone = it },
+                            label = { Text("Phone") },
+                            singleLine = true,
+                            colors = dialogFieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = editEmail,
+                            onValueChange = { editEmail = it },
+                            label = { Text("Email") },
+                            singleLine = true,
+                            colors = dialogFieldColors,
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
-                            onUpdateUserInfo(usrToEdit.udiseCode, editName, editPhone, editEmail, editSchoolName)
+                            onUpdateUserInfo(usrToEdit.udiseCode, editName, editPhone, editEmail, editSchoolName, editUdiseNumber)
                             editingUser = null
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen)
+                        colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
+                        modifier = Modifier.testTag("btn_save_user_edit")
                     ) {
                         Text("Save Changes", fontWeight = FontWeight.Bold)
                     }

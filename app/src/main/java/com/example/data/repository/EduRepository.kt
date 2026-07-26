@@ -25,6 +25,28 @@ class EduRepository(context: Context) {
 
     private val googleSheetsService = GoogleSheetsService()
     private val exportManager = ExportManager(context)
+    private val supabaseAuthService = com.example.data.service.SupabaseAuthService()
+    private val sessionPrefs = context.getSharedPreferences("supa_session_prefs", Context.MODE_PRIVATE)
+
+    fun saveSession(userId: String, email: String, token: String, fullName: String, role: String) {
+        sessionPrefs.edit()
+            .putString("session_user_id", userId)
+            .putString("session_email", email)
+            .putString("session_token", token)
+            .putString("session_full_name", fullName)
+            .putString("session_role", role)
+            .putBoolean("is_logged_in", true)
+            .apply()
+    }
+
+    fun clearSession() {
+        sessionPrefs.edit().clear().apply()
+    }
+
+    fun getSavedSessionUserId(): String? = sessionPrefs.getString("session_user_id", null)
+    fun getSavedSessionToken(): String? = sessionPrefs.getString("session_token", null)
+    fun getSavedSessionEmail(): String? = sessionPrefs.getString("session_email", null)
+    fun isSessionLoggedIn(): Boolean = sessionPrefs.getBoolean("is_logged_in", false)
 
     val allSchools: Flow<List<SchoolEntity>> = schoolDao.getAllSchools()
     val allForms: Flow<List<FormEntity>> = formDao.getAllForms()
@@ -47,8 +69,104 @@ class EduRepository(context: Context) {
         userDao.deleteUser(schoolId)
     }
 
-    suspend fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String) {
-        userDao.updateUserInfo(udiseCode, name, phone, email, schoolName)
+    suspend fun updateUserInfo(
+        udiseCode: String,
+        name: String,
+        phone: String,
+        email: String,
+        schoolName: String,
+        udiseNumber: String = ""
+    ) {
+        userDao.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
+        val token = getSavedSessionToken()
+        supabaseAuthService.updateUserProfile(
+            userId = udiseCode,
+            fullName = name,
+            phone = phone,
+            email = email,
+            schoolName = schoolName,
+            udiseNumber = udiseNumber,
+            accessToken = token
+        )
+    }
+
+    suspend fun syncUsersFromSupabase(): Result<List<UserEntity>> {
+        val token = getSavedSessionToken()
+        val profilesResult = supabaseAuthService.getAllProfiles(token)
+
+        if (profilesResult.isFailure) {
+            val err = profilesResult.exceptionOrNull()?.message ?: "Failed to fetch profiles from Supabase."
+            return Result.failure(Exception(err))
+        }
+
+        val profiles = profilesResult.getOrNull() ?: emptyList()
+
+        val syncedUsers = profiles.mapNotNull { profile ->
+            val userId = profile.id ?: return@mapNotNull null
+            val rawRole = profile.role?.lowercase()?.trim() ?: ""
+            val roleStr = if (rawRole == "officer") "OFFICER" else "HEADMASTER"
+            val email = profile.email ?: ""
+            val fullName = profile.full_name ?: ""
+            val udiseNum = profile.getDisplayUdise()
+            val schoolName = profile.school_name?.ifBlank { null }
+                ?: if (roleStr == "OFFICER") "District Office" else "School Portal"
+            val phone = profile.phone ?: ""
+
+            val existingLocalUser = userDao.getUserByUdise(userId)
+
+            UserEntity(
+                udiseCode = userId,
+                schoolName = schoolName,
+                headmasterName = fullName.ifBlank { existingLocalUser?.headmasterName ?: "User" },
+                phone = phone.ifBlank { existingLocalUser?.phone ?: "" },
+                passwordHash = existingLocalUser?.passwordHash ?: "",
+                role = roleStr,
+                registeredAt = existingLocalUser?.registeredAt ?: System.currentTimeMillis(),
+                email = email.ifBlank { existingLocalUser?.email ?: "" },
+                udiseNumber = udiseNum.ifBlank { existingLocalUser?.udiseNumber ?: "" }
+            )
+        }
+
+        val uniqueUsers = syncedUsers.distinctBy { it.udiseCode }
+
+        if (uniqueUsers.isNotEmpty()) {
+            val validIds = uniqueUsers.map { it.udiseCode }
+            userDao.deleteUsersNotIn(validIds)
+            uniqueUsers.forEach { user ->
+                userDao.insertUser(user)
+            }
+
+            val nonOfficerUsers = uniqueUsers.filter { it.role != "OFFICER" }
+            if (nonOfficerUsers.isNotEmpty()) {
+                val validSchoolIds = nonOfficerUsers.map { it.udiseCode }
+                schoolDao.deleteSchoolsNotIn(validSchoolIds)
+                nonOfficerUsers.forEach { user ->
+                    val existingSchool = schoolDao.getSchoolById(user.udiseCode)
+                    val displayUdise = user.udiseNumber.ifBlank { user.udiseCode }
+                    val finalSchoolName = if (user.schoolName.isNotBlank() && user.schoolName != "School Portal") {
+                        user.schoolName
+                    } else if (user.headmasterName.isNotBlank() && user.headmasterName != "User") {
+                        "${user.headmasterName}'s School"
+                    } else {
+                        existingSchool?.name ?: "School ($displayUdise)"
+                    }
+
+                    schoolDao.insertSchool(
+                        SchoolEntity(
+                            id = user.udiseCode,
+                            name = finalSchoolName,
+                            category = existingSchool?.category ?: "Secondary",
+                            district = existingSchool?.district ?: "District HQ",
+                            headmasterName = user.headmasterName,
+                            headmasterPhone = user.phone,
+                            email = user.email
+                        )
+                    )
+                }
+            }
+        }
+
+        return Result.success(uniqueUsers)
     }
 
     val totalSchoolsCount: Flow<Int> = schoolDao.getSchoolCount()
@@ -63,7 +181,127 @@ class EduRepository(context: Context) {
     }
 
     suspend fun loginUser(udiseCode: String, password: String): UserEntity? {
-        return userDao.login(udiseCode.trim(), password)
+        val res = loginUserWithSupabase(udiseCode, password)
+        return res.getOrNull()
+    }
+
+    suspend fun loginUserWithSupabase(udiseCodeOrEmail: String, password: String): Result<UserEntity> {
+        val trimmedInput = udiseCodeOrEmail.trim()
+        val authEmail = trimmedInput
+
+        val supabaseResult = supabaseAuthService.signIn(authEmail, password)
+
+        if (supabaseResult.isFailure) {
+            val errMsg = supabaseResult.exceptionOrNull()?.message ?: "Invalid credentials or Supabase Auth error."
+            return Result.failure(Exception(errMsg))
+        }
+
+        val resp = supabaseResult.getOrNull()
+        val user = resp?.user
+        val userId = user?.id ?: ""
+        val accessToken = resp?.access_token ?: ""
+
+        if (userId.isBlank()) {
+            return Result.failure(Exception("Supabase authentication failed to return a valid User ID."))
+        }
+
+        // 1 & 2. Get profile from public.profiles where profiles.id = userId
+        val profileResult = supabaseAuthService.getUserProfile(userId, accessToken)
+        val profile = profileResult.getOrNull()
+
+        // 3, 8 & 9. Read role column from profile and validate
+        val rawRole = profile?.role?.lowercase()?.trim() ?: ""
+        if (profile == null || (rawRole != "officer" && rawRole != "user")) {
+            supabaseAuthService.signOut(accessToken)
+            clearSession()
+            return Result.failure(
+                Exception("Your account has not been configured. Please contact the administrator.")
+            )
+        }
+
+        // 4 & 5. Route role: "officer" -> OFFICER, "user" -> HEADMASTER
+        val finalRoleStr = if (rawRole == "officer") "OFFICER" else "HEADMASTER"
+        val finalEmail = profile.email?.ifBlank { null } ?: user?.email ?: trimmedInput
+        val finalFullName = profile.full_name?.ifBlank { null } ?: user?.user_metadata?.hm_name ?: "User"
+
+        val loggedInUser = UserEntity(
+            udiseCode = userId,
+            schoolName = if (finalRoleStr == "OFFICER") "District Office" else "School Portal",
+            headmasterName = finalFullName,
+            phone = "",
+            email = finalEmail,
+            passwordHash = password,
+            role = finalRoleStr
+        )
+
+        userDao.insertUser(loggedInUser)
+        saveSession(
+            userId = userId,
+            email = finalEmail,
+            token = accessToken,
+            fullName = finalFullName,
+            role = finalRoleStr
+        )
+
+        return Result.success(loggedInUser)
+    }
+
+    suspend fun validateAndRestoreSession(): Result<UserEntity> {
+        if (!isSessionLoggedIn()) {
+            return Result.failure(Exception("No active session"))
+        }
+
+        val userId = getSavedSessionUserId()
+        val token = getSavedSessionToken()
+        val savedEmail = getSavedSessionEmail() ?: ""
+
+        if (userId.isNullOrBlank()) {
+            clearSession()
+            return Result.failure(Exception("No active session"))
+        }
+
+        // 10. Re-verify public.profiles on startup
+        val profileResult = supabaseAuthService.getUserProfile(userId, token)
+        val profile = profileResult.getOrNull()
+
+        val rawRole = profile?.role?.lowercase()?.trim() ?: ""
+        if (profile == null || (rawRole != "officer" && rawRole != "user")) {
+            clearSession()
+            return Result.failure(
+                Exception("Your account has not been configured. Please contact the administrator.")
+            )
+        }
+
+        val finalRoleStr = if (rawRole == "officer") "OFFICER" else "HEADMASTER"
+        val finalEmail = profile.email?.ifBlank { null } ?: savedEmail
+        val finalFullName = profile.full_name?.ifBlank { null } ?: "User"
+
+        val user = UserEntity(
+            udiseCode = userId,
+            schoolName = if (finalRoleStr == "OFFICER") "District Office" else "School Portal",
+            headmasterName = finalFullName,
+            phone = "",
+            email = finalEmail,
+            passwordHash = "",
+            role = finalRoleStr
+        )
+
+        userDao.insertUser(user)
+        saveSession(
+            userId = userId,
+            email = finalEmail,
+            token = token ?: "",
+            fullName = finalFullName,
+            role = finalRoleStr
+        )
+
+        return Result.success(user)
+    }
+
+    suspend fun logoutUser() {
+        val token = getSavedSessionToken()
+        supabaseAuthService.signOut(token)
+        clearSession()
     }
 
     suspend fun getUserByUdise(udiseCode: String): UserEntity? {
@@ -71,21 +309,52 @@ class EduRepository(context: Context) {
     }
 
     suspend fun registerUser(user: UserEntity) {
-        userDao.insertUser(user)
-        // Also register school if not already present
-        val existingSchool = schoolDao.getSchoolById(user.udiseCode)
-        if (existingSchool == null && user.role != "OFFICER") {
+        registerUserWithSupabase(user)
+    }
+
+    suspend fun registerUserWithSupabase(user: UserEntity): Result<UserEntity> {
+        val authEmail = if (user.email.isNotBlank() && user.email.contains("@")) {
+            user.email.trim()
+        } else {
+            "${user.udiseCode.trim()}@edudatasync.com"
+        }
+
+        val supabaseResult = supabaseAuthService.signUp(
+            email = authEmail,
+            password = user.passwordHash,
+            udiseCode = user.udiseCode,
+            schoolName = user.schoolName,
+            hmName = user.headmasterName,
+            phone = user.phone,
+            role = user.role
+        )
+
+        val updatedUser = user.copy(email = authEmail)
+        // Save locally to Room database
+        userDao.insertUser(updatedUser)
+        val existingSchool = schoolDao.getSchoolById(updatedUser.udiseCode)
+        if (existingSchool == null && updatedUser.role != "OFFICER") {
             schoolDao.insertSchool(
                 SchoolEntity(
-                    id = user.udiseCode,
-                    name = user.schoolName,
+                    id = updatedUser.udiseCode,
+                    name = updatedUser.schoolName,
                     category = "Secondary",
                     district = "Central District",
-                    headmasterName = user.headmasterName,
-                    headmasterPhone = user.phone,
-                    email = user.email
+                    headmasterName = updatedUser.headmasterName,
+                    headmasterPhone = updatedUser.phone,
+                    email = updatedUser.email
                 )
             )
+        }
+
+        return if (supabaseResult.isSuccess) {
+            Result.success(updatedUser)
+        } else {
+            val err = supabaseResult.exceptionOrNull()?.message
+            if (err != null && err.contains("User already registered", ignoreCase = true)) {
+                return Result.failure(Exception(err))
+            }
+            Result.success(updatedUser)
         }
     }
 

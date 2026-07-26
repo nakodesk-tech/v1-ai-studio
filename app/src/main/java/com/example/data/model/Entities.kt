@@ -101,7 +101,8 @@ data class UserEntity(
     val passwordHash: String,
     val role: String = "HEADMASTER", // HEADMASTER or OFFICER
     val registeredAt: Long = System.currentTimeMillis(),
-    val email: String = ""
+    val email: String = "",
+    val udiseNumber: String = ""
 )
 
 // Data Transfer Objects for Full Form View & Submissions

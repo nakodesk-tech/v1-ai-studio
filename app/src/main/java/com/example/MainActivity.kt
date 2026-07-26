@@ -72,6 +72,7 @@ fun MainAppScreen(
     val forms by viewModel.allForms.collectAsStateWithLifecycle()
     val submissions by viewModel.allSubmissions.collectAsStateWithLifecycle()
     val allUsers by viewModel.allUsers.collectAsStateWithLifecycle()
+    val isSyncingUsers by viewModel.isSyncingUsers.collectAsStateWithLifecycle()
     val syncConfig by viewModel.syncConfig.collectAsStateWithLifecycle()
     val selectedSchool by viewModel.selectedSchool.collectAsStateWithLifecycle()
 
@@ -106,21 +107,8 @@ fun MainAppScreen(
 
     if (!isLoggedIn) {
         LoginScreen(
-            onLogin = { udise, pwd, userRole, onError ->
-                viewModel.login(udise, pwd, userRole, onSuccess = {}, onError = onError)
-            },
-            onRegister = { udise, name, hmName, phone, email, pwd, userRole, onError ->
-                viewModel.registerSchoolUser(
-                    udiseCode = udise,
-                    schoolName = name,
-                    hmName = hmName,
-                    phone = phone,
-                    email = email,
-                    password = pwd,
-                    role = userRole,
-                    onSuccess = {},
-                    onError = onError
-                )
+            onLogin = { email, pwd, onError ->
+                viewModel.login(email, pwd, onSuccess = {}, onError = onError)
             }
         )
     } else if (fillingFormId != null) {
@@ -294,6 +282,8 @@ fun MainAppScreen(
                             syncConfig = syncConfig,
                             currentUser = currentUser,
                             allUsers = allUsers,
+                            isSyncingUsers = isSyncingUsers,
+                            onSyncUsers = { viewModel.syncUsers() },
                             onSaveSyncConfig = { email, sheetId, webhookUrl, autoSync ->
                                 viewModel.saveGoogleSyncSettings(email, sheetId, webhookUrl, autoSync)
                             },
@@ -312,8 +302,8 @@ fun MainAppScreen(
                             onDeleteUser = { udiseCode ->
                                 viewModel.deleteUser(udiseCode)
                             },
-                            onUpdateUserInfo = { udiseCode, name, phone, email, schoolName ->
-                                viewModel.updateUserInfo(udiseCode, name, phone, email, schoolName)
+                            onUpdateUserInfo = { udiseCode, name, phone, email, schoolName, udiseNumber ->
+                                viewModel.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
                             },
                             onLogout = {
                                 viewModel.logout()

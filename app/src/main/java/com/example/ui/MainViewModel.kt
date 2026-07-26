@@ -84,11 +84,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isSyncingUsers.value = true
             val result = repository.syncUsersFromSupabase()
-            _isSyncingUsers.value = false
             if (result.isSuccess) {
+                val currentId = _currentUser.value?.udiseCode
+                if (!currentId.isNullOrBlank()) {
+                    val refreshed = repository.getUserByUdise(currentId)
+                    if (refreshed != null) {
+                        _currentUser.value = refreshed
+                    }
+                }
+                _isSyncingUsers.value = false
                 _events.emit(UIEvent.ShowToast("Users synced successfully"))
                 onSuccess()
             } else {
+                _isSyncingUsers.value = false
                 val msg = result.exceptionOrNull()?.message ?: "Failed to sync users"
                 _events.emit(UIEvent.ShowToast("Sync error: $msg"))
                 onError(msg)
@@ -435,6 +443,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun createNewAccount(
+        role: UserRole,
+        fullName: String,
+        email: String,
+        password: String,
+        confirmPassword: String,
+        schoolName: String,
+        udiseNumber: String,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val trimmedFullName = fullName.trim()
+            val trimmedEmail = email.trim()
+            val trimmedSchoolName = schoolName.trim()
+            val trimmedUdise = udiseNumber.trim()
+
+            if (trimmedFullName.isBlank()) {
+                onError("Full Name cannot be empty.")
+                return@launch
+            }
+            if (trimmedEmail.isBlank() || !android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+                onError("Please enter a valid email address.")
+                return@launch
+            }
+            if (password.length < 6) {
+                onError("Password must be at least 6 characters.")
+                return@launch
+            }
+            if (password != confirmPassword) {
+                onError("Password and Confirm Password do not match.")
+                return@launch
+            }
+            if (role == UserRole.HEADMASTER) {
+                if (trimmedSchoolName.isBlank()) {
+                    onError("School Name is required for School User / HM registration.")
+                    return@launch
+                }
+                if (trimmedUdise.isBlank()) {
+                    onError("UDISE Number is required for School User / HM registration.")
+                    return@launch
+                }
+            }
+
+            _isSyncingUsers.value = true
+            val roleStr = if (role == UserRole.OFFICER) "officer" else "user"
+
+            val result = repository.createAccount(
+                email = trimmedEmail,
+                password = password,
+                fullName = trimmedFullName,
+                role = roleStr,
+                schoolName = if (role == UserRole.OFFICER) null else trimmedSchoolName,
+                udiseNumber = if (role == UserRole.OFFICER) null else trimmedUdise
+            )
+
+            _isSyncingUsers.value = false
+
+            if (result.isSuccess) {
+                _events.emit(UIEvent.ShowToast("Account created successfully in Supabase!"))
+                onSuccess()
+            } else {
+                val err = result.exceptionOrNull()?.message ?: "Failed to create account in Supabase."
+                _events.emit(UIEvent.ShowToast("Error: $err"))
+                onError(err)
+            }
+        }
+    }
+
     fun registerOfficerUser(
         officerId: String,
         fullName: String,
@@ -496,10 +573,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String = "") {
         viewModelScope.launch {
             _isSyncingUsers.value = true
-            repository.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
-            repository.syncUsersFromSupabase()
-            _isSyncingUsers.value = false
-            _events.emit(UIEvent.ShowToast("User profile updated successfully in Supabase."))
+            val result = repository.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
+            if (result.isSuccess) {
+                if (_currentUser.value?.udiseCode == udiseCode) {
+                    val refreshedUser = repository.getUserByUdise(udiseCode)
+                    if (refreshedUser != null) {
+                        _currentUser.value = refreshedUser
+                    }
+                }
+                _isSyncingUsers.value = false
+                _events.emit(UIEvent.ShowToast("User profile updated successfully in Supabase."))
+            } else {
+                _isSyncingUsers.value = false
+                val err = result.exceptionOrNull()?.message ?: "Failed to update user profile in Supabase."
+                android.util.Log.e("MainViewModel", "updateUserInfo error: $err")
+                _events.emit(UIEvent.ShowToast("Error: $err"))
+            }
         }
     }
 

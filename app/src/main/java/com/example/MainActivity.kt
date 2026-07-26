@@ -293,6 +293,9 @@ fun MainAppScreen(
                             onRegisterSchool = { udise, name, hmName, phone, email, pass, userRole, onSuccess, onError ->
                                 viewModel.registerSchoolUser(udise, name, hmName, phone, email, pass, userRole, onSuccess, onError)
                             },
+                            onCreateAccount = { role, fullName, email, password, confirmPassword, schoolName, udiseNumber, onSuccess, onError ->
+                                viewModel.createNewAccount(role, fullName, email, password, confirmPassword, schoolName, udiseNumber, onSuccess, onError)
+                            },
                             onChangePassword = { oldPass, newPass, confirmPass, onSuccess, onError ->
                                 viewModel.changeCurrentUserPassword(oldPass, newPass, confirmPass, onSuccess, onError)
                             },

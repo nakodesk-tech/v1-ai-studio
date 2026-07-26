@@ -335,8 +335,6 @@ class SupabaseAuthService {
     suspend fun updateUserProfile(
         userId: String,
         fullName: String? = null,
-        phone: String? = null,
-        email: String? = null,
         schoolName: String? = null,
         udiseNumber: String? = null,
         accessToken: String? = null
@@ -352,12 +350,11 @@ class SupabaseAuthService {
 
             val jsonParts = mutableListOf<String>()
             if (fullName != null) jsonParts.add("\"full_name\": \"${escapeJson(fullName)}\"")
-            if (phone != null) jsonParts.add("\"phone\": \"${escapeJson(phone)}\"")
-            if (email != null) jsonParts.add("\"email\": \"${escapeJson(email)}\"")
             if (schoolName != null) jsonParts.add("\"school_name\": \"${escapeJson(schoolName)}\"")
-            if (udiseNumber != null) {
-                jsonParts.add("\"udise_number\": \"${escapeJson(udiseNumber)}\"")
-                jsonParts.add("\"udise_code\": \"${escapeJson(udiseNumber)}\"")
+            if (udiseNumber != null) jsonParts.add("\"udise_number\": \"${escapeJson(udiseNumber)}\"")
+
+            if (jsonParts.isEmpty()) {
+                return@withContext Result.success(true)
             }
 
             val jsonBody = "{ " + jsonParts.joinToString(", ") + " }"
@@ -369,7 +366,7 @@ class SupabaseAuthService {
                 .addHeader("apikey", anonKey)
                 .addHeader("Authorization", authHeader)
                 .addHeader("Content-Type", "application/json")
-                .addHeader("Prefer", "return=minimal")
+                .addHeader("Prefer", "return=representation")
                 .build()
 
             Log.d("SupabaseAuth", "Updating profile for $userId at $url with body: $jsonBody")
@@ -379,11 +376,17 @@ class SupabaseAuthService {
                 Log.d("SupabaseAuth", "updateUserProfile Response Code: ${response.code}, Body: $responseBodyStr")
 
                 if (response.isSuccessful) {
-                    Result.success(true)
-                } else if (response.code == 400 && udiseNumber != null) {
-                    retryUpdateProfileWithSingleUdise(userId, fullName, phone, email, schoolName, udiseNumber, authHeader, anonKey, baseUrl)
+                    val trimmedBody = responseBodyStr.trim()
+                    if (trimmedBody == "[]") {
+                        Log.e("SupabaseAuth", "0 rows updated in public.profiles for ID $userId. Check RLS policies or user ID.")
+                        Result.failure(Exception("Supabase returned 0 updated rows. Check RLS policy on public.profiles or user ID."))
+                    } else {
+                        Result.success(true)
+                    }
                 } else {
-                    Result.failure(Exception("Failed to update profile on Supabase (Code ${response.code})."))
+                    val errorDetail = if (responseBodyStr.isNotBlank()) responseBodyStr else "HTTP Code ${response.code}"
+                    Log.e("SupabaseAuth", "updateUserProfile Failed: Code ${response.code}, Detail: $errorDetail")
+                    Result.failure(Exception("Supabase update error (Code ${response.code}): $errorDetail"))
                 }
             }
         } catch (e: Exception) {
@@ -392,85 +395,103 @@ class SupabaseAuthService {
         }
     }
 
-    private suspend fun retryUpdateProfileWithSingleUdise(
-        userId: String,
-        fullName: String?,
-        phone: String?,
-        email: String?,
+    suspend fun createAccount(
+        email: String,
+        password: String,
+        fullName: String,
+        role: String,
         schoolName: String?,
-        udiseNumber: String,
-        authHeader: String,
-        anonKey: String,
-        baseUrl: String
+        udiseNumber: String?,
+        accessToken: String? = null
     ): Result<Boolean> = withContext(Dispatchers.IO) {
-        val mediaType = "application/json; charset=utf-8".toMediaType()
-
-        val jsonParts1 = mutableListOf<String>()
-        if (fullName != null) jsonParts1.add("\"full_name\": \"${escapeJson(fullName)}\"")
-        if (phone != null) jsonParts1.add("\"phone\": \"${escapeJson(phone)}\"")
-        if (email != null) jsonParts1.add("\"email\": \"${escapeJson(email)}\"")
-        if (schoolName != null) jsonParts1.add("\"school_name\": \"${escapeJson(schoolName)}\"")
-        jsonParts1.add("\"udise_number\": \"${escapeJson(udiseNumber)}\"")
-        val jsonBody1 = "{ " + jsonParts1.joinToString(", ") + " }"
-
-        val req1 = Request.Builder()
-            .url("$baseUrl/rest/v1/profiles?id=eq.$userId")
-            .patch(jsonBody1.toRequestBody(mediaType))
-            .addHeader("apikey", anonKey)
-            .addHeader("Authorization", authHeader)
-            .addHeader("Content-Type", "application/json")
-            .build()
-
         try {
-            client.newCall(req1).execute().use { resp ->
-                if (resp.isSuccessful) return@withContext Result.success(true)
+            val baseUrl = getBaseUrl()
+            val anonKey = getAnonKey()
+            val authHeader = if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $anonKey"
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+
+            // 1. Attempt secure account creation via Edge Function: /functions/v1/create-user
+            val edgeUrl = "$baseUrl/functions/v1/create-user"
+            val edgeBody = """
+                {
+                  "email": "${escapeJson(email)}",
+                  "password": "${escapeJson(password)}",
+                  "full_name": "${escapeJson(fullName)}",
+                  "role": "${escapeJson(role)}",
+                  "school_name": ${if (schoolName != null) "\"${escapeJson(schoolName)}\"" else "null"},
+                  "udise_number": ${if (udiseNumber != null) "\"${escapeJson(udiseNumber)}\"" else "null"}
+                }
+            """.trimIndent()
+
+            val edgeReq = Request.Builder()
+                .url(edgeUrl)
+                .post(edgeBody.toRequestBody(mediaType))
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", authHeader)
+                .addHeader("Content-Type", "application/json")
+                .build()
+
+            Log.d("SupabaseAuth", "Attempting createAccount via Edge Function at $edgeUrl")
+
+            try {
+                client.newCall(edgeReq).execute().use { resp ->
+                    val respStr = resp.body?.string() ?: ""
+                    Log.d("SupabaseAuth", "Edge Function response code: ${resp.code}, body: $respStr")
+                    if (resp.isSuccessful) {
+                        return@withContext Result.success(true)
+                    } else if (resp.code != 404 && resp.code != 405) {
+                        val parsedErr = parseErrorMessage(respStr) ?: "Edge Function error (${resp.code})"
+                        return@withContext Result.failure(Exception(parsedErr))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseAuth", "Edge Function call failed, falling back to Auth SignUp API", e)
             }
-        } catch (e: Exception) { }
 
-        val jsonParts2 = mutableListOf<String>()
-        if (fullName != null) jsonParts2.add("\"full_name\": \"${escapeJson(fullName)}\"")
-        if (phone != null) jsonParts2.add("\"phone\": \"${escapeJson(phone)}\"")
-        if (email != null) jsonParts2.add("\"email\": \"${escapeJson(email)}\"")
-        if (schoolName != null) jsonParts2.add("\"school_name\": \"${escapeJson(schoolName)}\"")
-        jsonParts2.add("\"udise_code\": \"${escapeJson(udiseNumber)}\"")
-        val jsonBody2 = "{ " + jsonParts2.joinToString(", ") + " }"
+            // 2. Fallback: Standard Supabase Auth SignUp API
+            val fallbackUdise = udiseNumber ?: email.substringBefore("@")
+            val signUpRes = signUp(
+                email = email,
+                password = password,
+                udiseCode = fallbackUdise,
+                schoolName = schoolName ?: "",
+                hmName = fullName,
+                phone = "",
+                role = role
+            )
 
-        val req2 = Request.Builder()
-            .url("$baseUrl/rest/v1/profiles?id=eq.$userId")
-            .patch(jsonBody2.toRequestBody(mediaType))
-            .addHeader("apikey", anonKey)
-            .addHeader("Authorization", authHeader)
-            .addHeader("Content-Type", "application/json")
-            .build()
-
-        try {
-            client.newCall(req2).execute().use { resp ->
-                if (resp.isSuccessful) return@withContext Result.success(true)
+            if (signUpRes.isFailure) {
+                val err = signUpRes.exceptionOrNull()?.message ?: "Supabase registration failed."
+                return@withContext Result.failure(Exception(err))
             }
-        } catch (e: Exception) { }
 
-        val jsonParts3 = mutableListOf<String>()
-        if (fullName != null) jsonParts3.add("\"full_name\": \"${escapeJson(fullName)}\"")
-        if (phone != null) jsonParts3.add("\"phone\": \"${escapeJson(phone)}\"")
-        if (email != null) jsonParts3.add("\"email\": \"${escapeJson(email)}\"")
-        if (schoolName != null) jsonParts3.add("\"school_name\": \"${escapeJson(schoolName)}\"")
-        val jsonBody3 = "{ " + jsonParts3.joinToString(", ") + " }"
+            val authResp = signUpRes.getOrNull()
+            val createdId = authResp?.user?.id
 
-        val req3 = Request.Builder()
-            .url("$baseUrl/rest/v1/profiles?id=eq.$userId")
-            .patch(jsonBody3.toRequestBody(mediaType))
-            .addHeader("apikey", anonKey)
-            .addHeader("Authorization", authHeader)
-            .addHeader("Content-Type", "application/json")
-            .build()
-
-        try {
-            client.newCall(req3).execute().use { resp ->
-                if (resp.isSuccessful) return@withContext Result.success(true)
+            if (!createdId.isNullOrBlank()) {
+                updateUserProfile(
+                    userId = createdId,
+                    fullName = fullName,
+                    schoolName = schoolName,
+                    udiseNumber = udiseNumber,
+                    accessToken = accessToken
+                )
             }
-        } catch (e: Exception) { }
 
-        Result.success(true)
+            Result.success(true)
+        } catch (e: Exception) {
+            Log.e("SupabaseAuth", "createAccount Exception", e)
+            Result.failure(e)
+        }
+    }
+
+    private fun parseErrorMessage(jsonStr: String): String? {
+        return try {
+            val parsed = jsonAdapter.fromJson(jsonStr)
+            parsed?.message ?: parsed?.msg ?: parsed?.error_description ?: parsed?.error
+        } catch (e: Exception) {
+            if (jsonStr.isNotBlank() && !jsonStr.startsWith("<")) jsonStr else null
+        }
     }
 
     suspend fun signOut(accessToken: String? = null): Result<Boolean> = withContext(Dispatchers.IO) {

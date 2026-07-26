@@ -49,6 +49,7 @@ fun ProfileSyncScreen(
     onSaveSyncConfig: (String, String, String, Boolean) -> Unit,
     onRegisterOfficer: (officerId: String, fullName: String, designation: String, phone: String, email: String, password: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _ -> },
     onRegisterSchool: (udiseCode: String, schoolName: String, hmName: String, phone: String, email: String, password: String, role: UserRole, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
+    onCreateAccount: (role: UserRole, fullName: String, email: String, password: String, confirmPassword: String, schoolName: String, udiseNumber: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
     onChangePassword: (oldPass: String, newPass: String, confirmPass: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _ -> },
     onResetUserPassword: (udiseCode: String) -> Unit = {},
     onDeleteUser: (udiseCode: String) -> Unit = {},
@@ -71,18 +72,12 @@ fun ProfileSyncScreen(
 
     // Dialog flags
     var showChangePasswordDialog by remember { mutableStateOf(false) }
-    var showAddOfficerDialog by remember { mutableStateOf(false) }
-    var showAddSchoolDialog by remember { mutableStateOf(false) }
     var showManageUsersDialog by remember { mutableStateOf(false) }
+    var editingUser by remember { mutableStateOf<UserEntity?>(null) }
+    var userToDelete by remember { mutableStateOf<UserEntity?>(null) }
 
-    // Officer registration form states (for HM profile view)
-    var hmRegOfficerName by remember { mutableStateOf("") }
-    var hmRegOfficerDesig by remember { mutableStateOf("") }
-    var hmRegOfficerPhone by remember { mutableStateOf("") }
-    var hmRegOfficerEmail by remember { mutableStateOf("") }
-    var hmRegOfficerPassword by remember { mutableStateOf("") }
-    var hmRegOfficerConfirmPassword by remember { mutableStateOf("") }
-    var hmRegPasswordVisible by remember { mutableStateOf(false) }
+    // Section state for Officer User & Role Management (0: Officers, 1: School Users, 2: Add New Account)
+    var selectedSectionTab by remember { mutableStateOf(0) }
 
     Scaffold(
         topBar = {
@@ -161,7 +156,7 @@ fun ProfileSyncScreen(
                                     color = TextDarkPrimary
                                 )
                                 Text(
-                                    text = "ID / UDISE: ${currentUser?.udiseCode ?: "OFFICER123"}",
+                                    text = "UDISE Number: ${if (currentUser?.udiseNumber.isNullOrBlank()) "Not assigned" else currentUser!!.udiseNumber}",
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = ForestDarkGreen
@@ -223,7 +218,7 @@ fun ProfileSyncScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("School / Office Name", fontSize = 11.sp, color = ForestDarkGreen, fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = currentUser?.schoolName?.ifBlank { "District Education Office" } ?: "District Education Office",
+                                    text = if (currentUser?.schoolName.isNullOrBlank()) "Not assigned" else currentUser!!.schoolName,
                                     fontSize = 13.sp,
                                     color = TextDarkPrimary,
                                     fontWeight = FontWeight.SemiBold
@@ -248,7 +243,7 @@ fun ProfileSyncScreen(
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Registered Gmail / Email", fontSize = 11.sp, color = ForestDarkGreen, fontWeight = FontWeight.Bold)
                                 Text(
-                                    text = currentUser?.email?.ifBlank { "officer.main@education.gov.in" } ?: "officer.main@education.gov.in",
+                                    text = if (currentUser?.email.isNullOrBlank()) "Not assigned" else currentUser!!.email,
                                     fontSize = 13.sp,
                                     color = TextDarkPrimary,
                                     fontWeight = FontWeight.SemiBold
@@ -317,7 +312,7 @@ fun ProfileSyncScreen(
                 }
             }
 
-            // 2. OFFICER PORTAL / ACTIONS FOR OFFICER USER ROLE
+            // 2. OFFICER PORTAL / USER & ROLE MANAGEMENT SECTION
             if (currentRole == UserRole.OFFICER) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -326,124 +321,264 @@ fun ProfileSyncScreen(
                     border = BorderStroke(1.dp, SurfaceCardBorder)
                 ) {
                     Column(modifier = Modifier.padding(18.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(BentoHeroBg),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Filled.AdminPanelSettings, contentDescription = "Officer Tools", tint = ForestDarkGreen, modifier = Modifier.size(20.dp))
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text("Officer Administration & Role Management", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = TextDarkPrimary)
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // BUTTON 1: ADD NEW OFFICER USER ROLE
-                        Button(
-                            onClick = { showAddOfficerDialog = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(46.dp)
-                                .testTag("btn_add_officer_role"),
-                            colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
-                            shape = RoundedCornerShape(16.dp)
+                        // Header Row
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Filled.PersonAdd, contentDescription = "Add Officer")
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Add New Officer User Role", fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // BUTTON 2: ADD NEW SCHOOL USER ROLE
-                        OutlinedButton(
-                            onClick = { showAddSchoolDialog = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                                .testTag("btn_add_school_role"),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = ForestDarkGreen),
-                            border = BorderStroke(1.dp, ForestDarkGreen),
-                            shape = RoundedCornerShape(16.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            Icon(Icons.Filled.DomainAdd, contentDescription = "Add School")
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Add New School User Role (Register UDISE)", fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        val registeredUserCount = remember(allUsers) { allUsers.count { it.role != "OFFICER" } }
-
-                        // BUTTON 3: MANAGE REGISTERED USERS WITH SYNC & DYNAMIC USER COUNT
-                        Button(
-                            onClick = { showManageUsersDialog = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(min = 48.dp)
-                                .testTag("btn_manage_registered_users"),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1E293B)),
-                            shape = RoundedCornerShape(16.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Filled.Group, contentDescription = "Manage Users", tint = Color.White)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text(
-                                        text = "Manage Registered Users",
-                                        fontSize = 13.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color.White
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(BentoHeroBg),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Filled.AdminPanelSettings,
+                                        contentDescription = "User & Role Management",
+                                        tint = ForestDarkGreen,
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "User & Role Management",
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = TextDarkPrimary
+                                    )
+                                    Text(
+                                        text = "Administer officers & school accounts",
+                                        fontSize = 11.sp,
+                                        color = TextMuted
+                                    )
+                                }
+                            }
 
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Surface(
+                            // Sync / Refresh Button
+                            IconButton(
+                                onClick = { onSyncUsers() },
+                                enabled = !isSyncingUsers,
+                                modifier = Modifier.size(36.dp).testTag("btn_refresh_role_management")
+                            ) {
+                                if (isSyncingUsers) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(18.dp),
                                         color = ForestDarkGreen,
-                                        shape = RoundedCornerShape(12.dp)
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Filled.Refresh,
+                                        contentDescription = "Sync from Supabase",
+                                        tint = ForestDarkGreen,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // DYNAMIC SUMMARY CARDS FROM SUPABASE public.profiles
+                        val officersCount = remember(allUsers) { allUsers.count { it.role == "OFFICER" } }
+                        val schoolUsersCount = remember(allUsers) { allUsers.count { it.role != "OFFICER" } }
+                        val totalAccountsCount = remember(allUsers) { allUsers.size }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Summary Card 1: Officers
+                            Surface(
+                                onClick = { selectedSectionTab = 0 },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (selectedSectionTab == 0) BentoHeroBg else Color(0xFFF8FAFC),
+                                border = BorderStroke(
+                                    if (selectedSectionTab == 0) 1.5.dp else 1.dp,
+                                    if (selectedSectionTab == 0) ForestDarkGreen else SurfaceCardBorder
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Filled.VerifiedUser, contentDescription = "Officers", tint = ForestDarkGreen, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("$officersCount", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = ForestDarkGreen)
+                                    Text("Officers", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextDarkPrimary)
+                                }
+                            }
+
+                            // Summary Card 2: School Users
+                            Surface(
+                                onClick = { selectedSectionTab = 1 },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(16.dp),
+                                color = if (selectedSectionTab == 1) BentoHeroBg else Color(0xFFF8FAFC),
+                                border = BorderStroke(
+                                    if (selectedSectionTab == 1) 1.5.dp else 1.dp,
+                                    if (selectedSectionTab == 1) ForestDarkGreen else SurfaceCardBorder
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Filled.School, contentDescription = "School Users", tint = Color(0xFF1E88E5), modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("$schoolUsersCount", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1E88E5))
+                                    Text("School Users", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextDarkPrimary)
+                                }
+                            }
+
+                            // Summary Card 3: Total Accounts
+                            Surface(
+                                onClick = { selectedSectionTab = 0 },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFFF8FAFC),
+                                border = BorderStroke(1.dp, SurfaceCardBorder)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Icon(Icons.Filled.Group, contentDescription = "Total Accounts", tint = Color(0xFF475569), modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text("$totalAccountsCount", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF475569))
+                                    Text("Total Accounts", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = TextDarkPrimary)
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // SECTION CONTROL TABS
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            FilterChip(
+                                selected = selectedSectionTab == 0,
+                                onClick = { selectedSectionTab = 0 },
+                                label = { Text("Officers", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                leadingIcon = { Icon(Icons.Filled.VerifiedUser, contentDescription = null, modifier = Modifier.size(13.dp)) },
+                                modifier = Modifier.weight(1f).testTag("tab_manage_officers")
+                            )
+                            FilterChip(
+                                selected = selectedSectionTab == 1,
+                                onClick = { selectedSectionTab = 1 },
+                                label = { Text("School Users", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                leadingIcon = { Icon(Icons.Filled.School, contentDescription = null, modifier = Modifier.size(13.dp)) },
+                                modifier = Modifier.weight(1f).testTag("tab_manage_school_users")
+                            )
+                            FilterChip(
+                                selected = selectedSectionTab == 2,
+                                onClick = { selectedSectionTab = 2 },
+                                label = { Text("Add Account", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                leadingIcon = { Icon(Icons.Filled.PersonAdd, contentDescription = null, modifier = Modifier.size(13.dp)) },
+                                modifier = Modifier.weight(1f).testTag("tab_add_new_account")
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        when (selectedSectionTab) {
+                            0 -> {
+                                // MANAGE OFFICERS TAB
+                                val officersList = remember(allUsers) { allUsers.filter { it.role == "OFFICER" } }
+                                if (officersList.isEmpty()) {
+                                    Box(
+                                        modifier = Modifier.fillMaxWidth().padding(20.dp),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = "$registeredUserCount Users",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            color = Color.White,
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                                        )
+                                        Text("No registered Officers found in Supabase profiles.", fontSize = 12.sp, color = TextMuted)
                                     }
-
-                                    Spacer(modifier = Modifier.width(6.dp))
-
-                                    IconButton(
-                                        onClick = { onSyncUsers() },
-                                        enabled = !isSyncingUsers,
-                                        modifier = Modifier.size(32.dp).testTag("btn_refresh_registered_users")
-                                    ) {
-                                        if (isSyncingUsers) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(16.dp),
-                                                color = Color.White,
-                                                strokeWidth = 2.dp
-                                            )
-                                        } else {
-                                            Icon(
-                                                imageVector = Icons.Filled.Refresh,
-                                                contentDescription = "Sync Users from Supabase",
-                                                tint = Color.White,
-                                                modifier = Modifier.size(20.dp)
+                                } else {
+                                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                        officersList.forEach { usr ->
+                                            OfficerUserCardItem(
+                                                user = usr,
+                                                onEdit = { editingUser = usr },
+                                                onResetPassword = {
+                                                    onResetUserPassword(usr.udiseCode)
+                                                    Toast.makeText(context, "Password for ${usr.email.ifBlank { usr.udiseCode }} reset to Pass@123", Toast.LENGTH_LONG).show()
+                                                },
+                                                onDelete = { userToDelete = usr }
                                             )
                                         }
                                     }
                                 }
+                            }
+                            1 -> {
+                                // MANAGE SCHOOL USERS TAB
+                                var searchQuery by remember { mutableStateOf("") }
+                                val schoolUsersList = remember(allUsers, searchQuery) {
+                                    allUsers.filter { usr ->
+                                        usr.role != "OFFICER" && (
+                                            searchQuery.isBlank() ||
+                                            usr.schoolName.contains(searchQuery, ignoreCase = true) ||
+                                            usr.headmasterName.contains(searchQuery, ignoreCase = true) ||
+                                            usr.udiseNumber.contains(searchQuery, ignoreCase = true) ||
+                                            usr.email.contains(searchQuery, ignoreCase = true)
+                                        )
+                                    }
+                                }
+
+                                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    OutlinedTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        placeholder = { Text("Search school, HM, UDISE, email...", fontSize = 12.sp) },
+                                        leadingIcon = { Icon(Icons.Filled.Search, contentDescription = "Search") },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        singleLine = true,
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = TextDarkPrimary,
+                                            unfocusedTextColor = TextDarkPrimary,
+                                            focusedBorderColor = ForestDarkGreen,
+                                            unfocusedBorderColor = SurfaceCardBorder,
+                                            focusedContainerColor = SurfaceWhite,
+                                            unfocusedContainerColor = SurfaceWhite
+                                        )
+                                    )
+
+                                    if (schoolUsersList.isEmpty()) {
+                                        Box(
+                                            modifier = Modifier.fillMaxWidth().padding(20.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("No registered School Users found.", fontSize = 12.sp, color = TextMuted)
+                                        }
+                                    } else {
+                                        schoolUsersList.forEach { usr ->
+                                            SchoolUserCardItem(
+                                                user = usr,
+                                                onEdit = { editingUser = usr },
+                                                onResetPassword = {
+                                                    onResetUserPassword(usr.udiseCode)
+                                                    Toast.makeText(context, "Password for ${usr.schoolName.ifBlank { usr.udiseCode }} reset to Pass@123", Toast.LENGTH_LONG).show()
+                                                },
+                                                onDelete = { userToDelete = usr }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            2 -> {
+                                // ADD NEW ACCOUNT TAB
+                                AddNewAccountForm(
+                                    onCreateAccount = onCreateAccount,
+                                    onAccountCreated = { createdRole ->
+                                        selectedSectionTab = if (createdRole == UserRole.OFFICER) 0 else 1
+                                    }
+                                )
                             }
                         }
                     }
@@ -805,150 +940,6 @@ fun ProfileSyncScreen(
         )
     }
 
-    // --- DIALOG 2: ADD NEW OFFICER USER ROLE (OFFICER PORTAL) ---
-    if (showAddOfficerDialog) {
-        var offIdInput by remember { mutableStateOf("") }
-        var offNameInput by remember { mutableStateOf("") }
-        var offDesigInput by remember { mutableStateOf("") }
-        var offPhoneInput by remember { mutableStateOf("") }
-        var offEmailInput by remember { mutableStateOf("") }
-        var offPassInput by remember { mutableStateOf("") }
-        var offConfirmPassInput by remember { mutableStateOf("") }
-
-        AlertDialog(
-            onDismissRequest = { showAddOfficerDialog = false },
-            title = {
-                Text("Add New Officer User Role", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = ForestDarkGreen)
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                ) {
-                    val dialogFieldColors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextDarkPrimary,
-                        unfocusedTextColor = TextDarkPrimary,
-                        focusedBorderColor = ForestDarkGreen,
-                        unfocusedBorderColor = SurfaceCardBorder,
-                        focusedLabelColor = ForestDarkGreen,
-                        unfocusedLabelColor = TextDarkPrimary,
-                        focusedContainerColor = SurfaceWhite,
-                        unfocusedContainerColor = SurfaceWhite
-                    )
-                    OutlinedTextField(value = offNameInput, onValueChange = { offNameInput = it }, label = { Text("Full Name *") }, singleLine = true, colors = dialogFieldColors)
-                    OutlinedTextField(value = offDesigInput, onValueChange = { offDesigInput = it }, label = { Text("Designation *") }, singleLine = true, colors = dialogFieldColors)
-                    OutlinedTextField(value = offPhoneInput, onValueChange = { offPhoneInput = it }, label = { Text("Mobile Number *") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), colors = dialogFieldColors)
-                    OutlinedTextField(value = offEmailInput, onValueChange = { offEmailInput = it }, label = { Text("Office Email ID *") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), colors = dialogFieldColors)
-                    OutlinedTextField(value = offPassInput, onValueChange = { offPassInput = it }, label = { Text("Create Password *") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, colors = dialogFieldColors)
-                    OutlinedTextField(value = offConfirmPassInput, onValueChange = { offConfirmPassInput = it }, label = { Text("Confirm Password *") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, colors = dialogFieldColors)
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (offPassInput != offConfirmPassInput) {
-                            Toast.makeText(context, "Passwords do not match!", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        onRegisterOfficer(
-                            offIdInput,
-                            offNameInput,
-                            offDesigInput,
-                            offPhoneInput,
-                            offEmailInput,
-                            offPassInput,
-                            {
-                                showAddOfficerDialog = false
-                                Toast.makeText(context, "Officer registered successfully!", Toast.LENGTH_SHORT).show()
-                            },
-                            { err -> Toast.makeText(context, err, Toast.LENGTH_LONG).show() }
-                        )
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen)
-                ) {
-                    Text("Register Officer", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddOfficerDialog = false }) { Text("Cancel") }
-            },
-            shape = RoundedCornerShape(24.dp)
-        )
-    }
-
-    // --- DIALOG 3: ADD NEW SCHOOL USER ROLE (REGISTER UDISE) ---
-    if (showAddSchoolDialog) {
-        var schUdiseInput by remember { mutableStateOf("") }
-        var schNameInput by remember { mutableStateOf("") }
-        var schHmInput by remember { mutableStateOf("") }
-        var schPhoneInput by remember { mutableStateOf("") }
-        var schEmailInput by remember { mutableStateOf("") }
-        var schPassInput by remember { mutableStateOf("") }
-        var schConfirmPassInput by remember { mutableStateOf("") }
-
-        AlertDialog(
-            onDismissRequest = { showAddSchoolDialog = false },
-            title = {
-                Text("Add New School User Role (UDISE)", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = ForestDarkGreen)
-            },
-            text = {
-                Column(
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                ) {
-                    val dialogFieldColors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextDarkPrimary,
-                        unfocusedTextColor = TextDarkPrimary,
-                        focusedBorderColor = ForestDarkGreen,
-                        unfocusedBorderColor = SurfaceCardBorder,
-                        focusedLabelColor = ForestDarkGreen,
-                        unfocusedLabelColor = TextDarkPrimary,
-                        focusedContainerColor = SurfaceWhite,
-                        unfocusedContainerColor = SurfaceWhite
-                    )
-                    OutlinedTextField(value = schUdiseInput, onValueChange = { schUdiseInput = it }, label = { Text("UDISE Code *") }, singleLine = true, colors = dialogFieldColors)
-                    OutlinedTextField(value = schNameInput, onValueChange = { schNameInput = it }, label = { Text("School Name *") }, singleLine = true, colors = dialogFieldColors)
-                    OutlinedTextField(value = schHmInput, onValueChange = { schHmInput = it }, label = { Text("Headmaster Name *") }, singleLine = true, colors = dialogFieldColors)
-                    OutlinedTextField(value = schPhoneInput, onValueChange = { schPhoneInput = it }, label = { Text("Phone Number *") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone), colors = dialogFieldColors)
-                    OutlinedTextField(value = schEmailInput, onValueChange = { schEmailInput = it }, label = { Text("School Gmail / Email *") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email), colors = dialogFieldColors)
-                    OutlinedTextField(value = schPassInput, onValueChange = { schPassInput = it }, label = { Text("Password *") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, colors = dialogFieldColors)
-                    OutlinedTextField(value = schConfirmPassInput, onValueChange = { schConfirmPassInput = it }, label = { Text("Confirm Password *") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, colors = dialogFieldColors)
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (schPassInput != schConfirmPassInput) {
-                            Toast.makeText(context, "Passwords do not match!", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        onRegisterSchool(
-                            schUdiseInput,
-                            schNameInput,
-                            schHmInput,
-                            schPhoneInput,
-                            schEmailInput,
-                            schPassInput,
-                            UserRole.HEADMASTER,
-                            {
-                                showAddSchoolDialog = false
-                                Toast.makeText(context, "School UDISE user added!", Toast.LENGTH_SHORT).show()
-                            },
-                            { err -> Toast.makeText(context, err, Toast.LENGTH_LONG).show() }
-                        )
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen)
-                ) {
-                    Text("Add School User", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showAddSchoolDialog = false }) { Text("Cancel") }
-            },
-            shape = RoundedCornerShape(24.dp)
-        )
-    }
-
     // --- DIALOG 4: MANAGE ALL REGISTERED USERS (SHOW ALL SCHOOLS & OFFICERS) ---
     if (showManageUsersDialog) {
         var userSearch by remember { mutableStateOf("") }
@@ -1278,6 +1269,485 @@ fun ProfileSyncScreen(
                 },
                 shape = RoundedCornerShape(20.dp)
             )
+        }
+    }
+}
+
+@Composable
+fun AddNewAccountForm(
+    onCreateAccount: (role: UserRole, fullName: String, email: String, password: String, confirmPassword: String, schoolName: String, udiseNumber: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit,
+    onAccountCreated: (UserRole) -> Unit
+) {
+    val context = LocalContext.current
+    var selectedRole by remember { mutableStateOf(UserRole.OFFICER) }
+    var fullName by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var passwordVisible by remember { mutableStateOf(false) }
+
+    // Required for School User / HM
+    var schoolName by remember { mutableStateOf("") }
+    var udiseNumber by remember { mutableStateOf("") }
+
+    var formErrorMessage by remember { mutableStateOf<String?>(null) }
+    var isSubmitting by remember { mutableStateOf(false) }
+
+    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("Select User Role *", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextDarkPrimary)
+
+        // TWO LARGE SELECTABLE ROLE CARDS
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // ROLE 1: OFFICER
+            Surface(
+                onClick = { selectedRole = UserRole.OFFICER },
+                modifier = Modifier.weight(1f).testTag("role_card_officer"),
+                shape = RoundedCornerShape(18.dp),
+                color = if (selectedRole == UserRole.OFFICER) BentoHeroBg else SurfaceWhite,
+                border = BorderStroke(
+                    if (selectedRole == UserRole.OFFICER) 2.dp else 1.dp,
+                    if (selectedRole == UserRole.OFFICER) ForestDarkGreen else SurfaceCardBorder
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.VerifiedUser,
+                            contentDescription = "Officer Role",
+                            tint = ForestDarkGreen,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        RadioButton(
+                            selected = selectedRole == UserRole.OFFICER,
+                            onClick = { selectedRole = UserRole.OFFICER },
+                            colors = RadioButtonDefaults.colors(selectedColor = ForestDarkGreen)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("OFFICER", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = ForestDarkGreen)
+                    Text("Administrative access", fontSize = 10.sp, color = TextSecondary)
+                }
+            }
+
+            // ROLE 2: SCHOOL USER / HM
+            Surface(
+                onClick = { selectedRole = UserRole.HEADMASTER },
+                modifier = Modifier.weight(1f).testTag("role_card_school_user"),
+                shape = RoundedCornerShape(18.dp),
+                color = if (selectedRole == UserRole.HEADMASTER) BentoHeroBg else SurfaceWhite,
+                border = BorderStroke(
+                    if (selectedRole == UserRole.HEADMASTER) 2.dp else 1.dp,
+                    if (selectedRole == UserRole.HEADMASTER) ForestDarkGreen else SurfaceCardBorder
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(14.dp),
+                    horizontalAlignment = Alignment.Start
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.School,
+                            contentDescription = "School User Role",
+                            tint = ForestDarkGreen,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        RadioButton(
+                            selected = selectedRole == UserRole.HEADMASTER,
+                            onClick = { selectedRole = UserRole.HEADMASTER },
+                            colors = RadioButtonDefaults.colors(selectedColor = ForestDarkGreen)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text("SCHOOL USER / HM", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, color = ForestDarkGreen)
+                    Text("School-level access", fontSize = 10.sp, color = TextSecondary)
+                }
+            }
+        }
+
+        val fieldColors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = TextDarkPrimary,
+            unfocusedTextColor = TextDarkPrimary,
+            focusedBorderColor = ForestDarkGreen,
+            unfocusedBorderColor = SurfaceCardBorder,
+            focusedLabelColor = ForestDarkGreen,
+            unfocusedLabelColor = TextDarkPrimary,
+            focusedContainerColor = SurfaceWhite,
+            unfocusedContainerColor = SurfaceWhite
+        )
+
+        // COMMON REQUIRED FIELDS
+        OutlinedTextField(
+            value = fullName,
+            onValueChange = { fullName = it; formErrorMessage = null },
+            label = { Text("Full Name *") },
+            placeholder = { Text("e.g. Ramesh Kumar") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("input_reg_fullname"),
+            shape = RoundedCornerShape(14.dp),
+            colors = fieldColors
+        )
+
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it; formErrorMessage = null },
+            label = { Text("Email Address *") },
+            placeholder = { Text("e.g. officer@education.gov.in") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth().testTag("input_reg_email"),
+            shape = RoundedCornerShape(14.dp),
+            colors = fieldColors
+        )
+
+        OutlinedTextField(
+            value = password,
+            onValueChange = { password = it; formErrorMessage = null },
+            label = { Text("Password * (Min 6 chars)") },
+            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+            trailingIcon = {
+                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Icon(
+                        imageVector = if (passwordVisible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                        contentDescription = "Toggle password"
+                    )
+                }
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("input_reg_password"),
+            shape = RoundedCornerShape(14.dp),
+            colors = fieldColors
+        )
+
+        OutlinedTextField(
+            value = confirmPassword,
+            onValueChange = { confirmPassword = it; formErrorMessage = null },
+            label = { Text("Confirm Password *") },
+            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth().testTag("input_reg_confirm_password"),
+            shape = RoundedCornerShape(14.dp),
+            colors = fieldColors
+        )
+
+        // IF ROLE = SCHOOL USER / HM: SHOW SCHOOL NAME & UDISE NUMBER
+        if (selectedRole == UserRole.HEADMASTER) {
+            OutlinedTextField(
+                value = schoolName,
+                onValueChange = { schoolName = it; formErrorMessage = null },
+                label = { Text("School Name *") },
+                placeholder = { Text("e.g. Govt Higher Secondary School") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("input_reg_school_name"),
+                shape = RoundedCornerShape(14.dp),
+                colors = fieldColors
+            )
+
+            OutlinedTextField(
+                value = udiseNumber,
+                onValueChange = { udiseNumber = it; formErrorMessage = null },
+                label = { Text("UDISE Number *") },
+                placeholder = { Text("e.g. 27010100101") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("input_reg_udise"),
+                shape = RoundedCornerShape(14.dp),
+                colors = fieldColors
+            )
+        }
+
+        // ERROR DISPLAY
+        formErrorMessage?.let { err ->
+            Surface(
+                color = Color(0xFFFFEBEE),
+                border = BorderStroke(1.dp, Color(0xFFFFCDD2)),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Filled.Error, contentDescription = "Error", tint = Color(0xFFD32F2F), modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = err, fontSize = 12.sp, color = Color(0xFFB71C1C), fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        // SUBMIT BUTTON
+        Button(
+            onClick = {
+                val trimmedName = fullName.trim()
+                val trimmedEmail = email.trim()
+                val trimmedSchool = schoolName.trim()
+                val trimmedUdise = udiseNumber.trim()
+
+                if (trimmedName.isBlank()) {
+                    formErrorMessage = "Full Name cannot be empty."
+                    return@Button
+                }
+                if (trimmedEmail.isBlank() || !android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+                    formErrorMessage = "Please enter a valid email address."
+                    return@Button
+                }
+                if (password.length < 6) {
+                    formErrorMessage = "Password must be at least 6 characters long."
+                    return@Button
+                }
+                if (password != confirmPassword) {
+                    formErrorMessage = "Password and Confirm Password do not match."
+                    return@Button
+                }
+                if (selectedRole == UserRole.HEADMASTER) {
+                    if (trimmedSchool.isBlank()) {
+                        formErrorMessage = "School Name is required for School User / HM registration."
+                        return@Button
+                    }
+                    if (trimmedUdise.isBlank()) {
+                        formErrorMessage = "UDISE Number is required for School User / HM registration."
+                        return@Button
+                    }
+                }
+
+                isSubmitting = true
+                formErrorMessage = null
+
+                onCreateAccount(
+                    selectedRole,
+                    trimmedName,
+                    trimmedEmail,
+                    password,
+                    confirmPassword,
+                    trimmedSchool,
+                    trimmedUdise,
+                    {
+                        isSubmitting = false
+                        fullName = ""
+                        email = ""
+                        password = ""
+                        confirmPassword = ""
+                        schoolName = ""
+                        udiseNumber = ""
+                        Toast.makeText(context, "Account created successfully!", Toast.LENGTH_LONG).show()
+                        onAccountCreated(selectedRole)
+                    },
+                    { err ->
+                        isSubmitting = false
+                        formErrorMessage = err
+                    }
+                )
+            },
+            enabled = !isSubmitting,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .testTag("btn_create_account"),
+            colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            if (isSubmitting) {
+                CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Creating Account in Supabase...", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            } else {
+                Icon(Icons.Filled.PersonAdd, contentDescription = "Create Account", modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Create Account", fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+@Composable
+fun OfficerUserCardItem(
+    user: UserEntity,
+    onEdit: () -> Unit,
+    onResetPassword: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = BentoHeroBg,
+        border = BorderStroke(1.dp, SurfaceCardBorder)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = user.headmasterName.ifBlank { "Officer Account" },
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TextDarkPrimary
+                    )
+                    Text(
+                        text = if (user.email.isBlank()) "Email: Not assigned" else user.email,
+                        fontSize = 12.sp,
+                        color = TextMuted
+                    )
+                }
+
+                Surface(
+                    color = Color(0xFF1E88E5),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = "OFFICER",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onResetPassword,
+                    modifier = Modifier.weight(1f).height(32.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Reset Pass@123", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = onEdit,
+                    modifier = Modifier.weight(0.8f).height(32.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Edit Profile", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color(0xFFD32F2F), modifier = Modifier.size(18.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SchoolUserCardItem(
+    user: UserEntity,
+    onEdit: () -> Unit,
+    onResetPassword: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        color = BentoHeroBg,
+        border = BorderStroke(1.dp, SurfaceCardBorder)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.Top
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    val displaySchool = if (user.schoolName.isBlank() || user.schoolName == "School Portal" || user.schoolName == "District Office") "School Not Set" else user.schoolName
+                    Text(
+                        text = displaySchool,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = TextDarkPrimary
+                    )
+                    Text(
+                        text = "HM / User: ${user.headmasterName.ifBlank { "Not set" }}",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = TextDarkPrimary
+                    )
+                    Text(
+                        text = "UDISE: ${if (user.udiseNumber.isBlank()) "Not set" else user.udiseNumber}",
+                        fontSize = 11.sp,
+                        color = ForestDarkGreen,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Email: ${if (user.email.isBlank()) "Not set" else user.email}",
+                        fontSize = 11.sp,
+                        color = TextMuted
+                    )
+                }
+
+                Surface(
+                    color = ForestDarkGreen,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text(
+                        text = "SCHOOL USER / HM",
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onResetPassword,
+                    modifier = Modifier.weight(1f).height(32.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Reset Pass@123", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+
+                OutlinedButton(
+                    onClick = onEdit,
+                    modifier = Modifier.weight(0.8f).height(32.dp),
+                    contentPadding = PaddingValues(0.dp),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Edit Profile", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                }
+
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = Color(0xFFD32F2F), modifier = Modifier.size(18.dp))
+                }
+            }
         }
     }
 }

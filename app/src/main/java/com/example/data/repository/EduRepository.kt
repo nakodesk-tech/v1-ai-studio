@@ -76,18 +76,24 @@ class EduRepository(context: Context) {
         email: String,
         schoolName: String,
         udiseNumber: String = ""
-    ) {
-        userDao.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
+    ): Result<Boolean> {
         val token = getSavedSessionToken()
-        supabaseAuthService.updateUserProfile(
+        val supabaseResult = supabaseAuthService.updateUserProfile(
             userId = udiseCode,
             fullName = name,
-            phone = phone,
-            email = email,
             schoolName = schoolName,
             udiseNumber = udiseNumber,
             accessToken = token
         )
+
+        if (supabaseResult.isFailure) {
+            val err = supabaseResult.exceptionOrNull()?.message ?: "Failed to update profile on Supabase."
+            return Result.failure(Exception(err))
+        }
+
+        userDao.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
+        syncUsersFromSupabase()
+        return Result.success(true)
     }
 
     suspend fun syncUsersFromSupabase(): Result<List<UserEntity>> {
@@ -223,15 +229,18 @@ class EduRepository(context: Context) {
         val finalRoleStr = if (rawRole == "officer") "OFFICER" else "HEADMASTER"
         val finalEmail = profile.email?.ifBlank { null } ?: user?.email ?: trimmedInput
         val finalFullName = profile.full_name?.ifBlank { null } ?: user?.user_metadata?.hm_name ?: "User"
+        val finalSchoolName = profile.school_name?.ifBlank { null } ?: if (finalRoleStr == "OFFICER") "District Office" else "School Portal"
+        val finalUdiseNumber = profile.getDisplayUdise()
 
         val loggedInUser = UserEntity(
             udiseCode = userId,
-            schoolName = if (finalRoleStr == "OFFICER") "District Office" else "School Portal",
+            schoolName = finalSchoolName,
             headmasterName = finalFullName,
-            phone = "",
+            phone = profile.phone ?: "",
             email = finalEmail,
             passwordHash = password,
-            role = finalRoleStr
+            role = finalRoleStr,
+            udiseNumber = finalUdiseNumber
         )
 
         userDao.insertUser(loggedInUser)
@@ -275,15 +284,18 @@ class EduRepository(context: Context) {
         val finalRoleStr = if (rawRole == "officer") "OFFICER" else "HEADMASTER"
         val finalEmail = profile.email?.ifBlank { null } ?: savedEmail
         val finalFullName = profile.full_name?.ifBlank { null } ?: "User"
+        val finalSchoolName = profile.school_name?.ifBlank { null } ?: if (finalRoleStr == "OFFICER") "District Office" else "School Portal"
+        val finalUdiseNumber = profile.getDisplayUdise()
 
         val user = UserEntity(
             udiseCode = userId,
-            schoolName = if (finalRoleStr == "OFFICER") "District Office" else "School Portal",
+            schoolName = finalSchoolName,
             headmasterName = finalFullName,
-            phone = "",
+            phone = profile.phone ?: "",
             email = finalEmail,
             passwordHash = "",
-            role = finalRoleStr
+            role = finalRoleStr,
+            udiseNumber = finalUdiseNumber
         )
 
         userDao.insertUser(user)
@@ -356,6 +368,34 @@ class EduRepository(context: Context) {
             }
             Result.success(updatedUser)
         }
+    }
+
+    suspend fun createAccount(
+        email: String,
+        password: String,
+        fullName: String,
+        role: String,
+        schoolName: String?,
+        udiseNumber: String?
+    ): Result<Boolean> {
+        val token = getSavedSessionToken()
+        val result = supabaseAuthService.createAccount(
+            email = email,
+            password = password,
+            fullName = fullName,
+            role = role,
+            schoolName = schoolName,
+            udiseNumber = udiseNumber,
+            accessToken = token
+        )
+
+        if (result.isFailure) {
+            val err = result.exceptionOrNull()?.message ?: "Account creation failed."
+            return Result.failure(Exception(err))
+        }
+
+        syncUsersFromSupabase()
+        return Result.success(true)
     }
 
     suspend fun updateSchoolContact(schoolId: String, phone: String, email: String) {

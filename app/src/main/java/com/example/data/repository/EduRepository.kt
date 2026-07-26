@@ -590,6 +590,138 @@ class EduRepository(context: Context) {
         syncConfigDao.saveSyncConfig(config)
     }
 
+    suspend fun publishFormToSupabase(
+        title: String,
+        description: String,
+        sourceFileName: String,
+        sourceSheetName: String,
+        fields: List<FormFieldEntity>
+    ): Result<String> {
+        val token = refreshCurrentSessionIfNeeded() ?: getSavedSessionToken()
+        if (token.isNullOrBlank()) {
+            return Result.failure(Exception("Officer session is missing or expired. Please sign in again."))
+        }
+
+        val officerUserId = getSavedSessionUserId() ?: ""
+        val officerName = sessionPrefs.getString("session_full_name", "") ?: "Chief Officer"
+
+        val formId = UUID.randomUUID().toString()
+        val isoNow = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }.format(java.util.Date())
+
+        val formDto = com.example.data.service.SupabaseFormDto(
+            id = formId,
+            title = title.trim(),
+            description = description.trim(),
+            created_by = officerUserId,
+            created_by_name = officerName,
+            status = "PUBLISHED",
+            source_type = "EXCEL",
+            source_file_name = sourceFileName,
+            source_sheet_name = sourceSheetName,
+            created_at = isoNow,
+            published_at = isoNow
+        )
+
+        val fieldDtos = fields.mapIndexed { index, field ->
+            val fieldId = if (field.id.isNotBlank()) field.id else UUID.randomUUID().toString()
+            com.example.data.service.SupabaseFormFieldDto(
+                id = fieldId,
+                form_id = formId,
+                label = field.label.trim(),
+                field_type = field.fieldType,
+                options = field.options.trim(),
+                is_required = field.isRequired,
+                order_index = index,
+                created_at = isoNow
+            )
+        }
+
+        val result = supabaseAuthService.publishFormToSupabase(formDto, fieldDtos, token)
+        if (result.isSuccess) {
+            val localForm = FormEntity(
+                id = formId,
+                title = title.trim(),
+                description = description.trim(),
+                createdBy = officerName,
+                createdAt = System.currentTimeMillis(),
+                status = "PUBLISHED"
+            )
+            val localFields = fieldDtos.map { dto ->
+                FormFieldEntity(
+                    id = dto.id,
+                    formId = formId,
+                    label = dto.label,
+                    fieldType = dto.field_type,
+                    options = dto.options ?: "",
+                    isRequired = dto.is_required ?: true,
+                    orderIndex = dto.order_index ?: 0
+                )
+            }
+            formDao.insertFormWithFields(localForm, localFields)
+            syncPublishedFormsFromSupabase()
+            return Result.success(formId)
+        } else {
+            val err = result.exceptionOrNull()?.message ?: "Failed to publish form to Supabase."
+            return Result.failure(Exception(err))
+        }
+    }
+
+    suspend fun syncPublishedFormsFromSupabase(): Result<List<FormEntity>> {
+        val token = getSavedSessionToken()
+        val result = supabaseAuthService.fetchPublishedFormsFromSupabase(token)
+
+        if (result.isSuccess) {
+            val (formsList, fieldsList) = result.getOrNull() ?: Pair(emptyList(), emptyList())
+            val fieldsGrouped = fieldsList.groupBy { it.form_id }
+
+            formsList.forEach { sForm ->
+                val formId = sForm.id
+                val localForm = FormEntity(
+                    id = formId,
+                    title = sForm.title,
+                    description = sForm.description ?: "",
+                    createdBy = sForm.created_by_name?.ifBlank { null } ?: sForm.created_by ?: "Officer",
+                    createdAt = parseIsoTimestampToLong(sForm.published_at ?: sForm.created_at),
+                    status = "PUBLISHED"
+                )
+
+                val sFields = fieldsGrouped[formId] ?: emptyList()
+                val localFields = sFields.map { sField ->
+                    FormFieldEntity(
+                        id = sField.id,
+                        formId = formId,
+                        label = sField.label,
+                        fieldType = sField.field_type,
+                        options = sField.options ?: "",
+                        isRequired = sField.is_required ?: true,
+                        orderIndex = sField.order_index ?: 0
+                    )
+                }
+
+                formDao.insertFormWithFields(localForm, localFields)
+            }
+            return Result.success(formDao.getAllForms().firstOrNull() ?: emptyList())
+        } else {
+            val err = result.exceptionOrNull()?.message ?: "Failed to sync forms from Supabase."
+            android.util.Log.w("EduRepository", "syncPublishedFormsFromSupabase failed: $err")
+            return Result.failure(Exception(err))
+        }
+    }
+
+    private fun parseIsoTimestampToLong(isoString: String?): Long {
+        if (isoString.isNullOrBlank()) return System.currentTimeMillis()
+        return try {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US)
+            sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            val clean = isoString.substringBefore(".").substringBefore("+").substringBefore("Z")
+            sdf.parse(clean)?.time ?: System.currentTimeMillis()
+        } catch (e: Exception) {
+            System.currentTimeMillis()
+        }
+    }
+
     fun exportFormToPdf(formWithFields: FormWithFields, submissions: List<SubmissionWithValues>): File {
         return exportManager.generatePdfReport(formWithFields, submissions)
     }

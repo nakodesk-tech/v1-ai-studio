@@ -1,14 +1,21 @@
 package com.example.ui.screens
 
+import android.net.Uri
+import android.util.Log
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.compose.ui.viewinterop.AndroidView
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -18,16 +25,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.example.data.model.FormEntity
 import com.example.data.model.FormFieldEntity
 import com.example.data.model.SubmissionEntity
 import com.example.data.model.UserEntity
 import com.example.ui.UserRole
 import com.example.ui.theme.*
+import com.example.utils.ExcelParser
+import com.example.utils.SheetInfo
 
 @Composable
 fun FormsScreen(
@@ -43,13 +54,71 @@ fun FormsScreen(
     onCreateNewForm: (String, String, String, List<FormFieldEntity>) -> Unit,
     onImportFromExcel: (String, String, String, String) -> Unit,
     onDeleteSubmission: (formId: String, schoolId: String) -> Unit = { _, _ -> },
-    onDeletePublishedForm: (formId: String) -> Unit = {}
+    onDeletePublishedForm: (formId: String) -> Unit = {},
+    onPublishFormToSupabase: (
+        title: String,
+        desc: String,
+        fileName: String,
+        sheetName: String,
+        fields: List<FormFieldEntity>,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) -> Unit = { _, _, _, _, _, _, _ -> },
+    onRefreshForms: () -> Unit = {}
 ) {
+    LaunchedEffect(Unit) {
+        onRefreshForms()
+    }
+
+    val context = LocalContext.current
+
     var showCreateDialog by remember { mutableStateOf(false) }
     var showExcelImportDialog by remember { mutableStateOf(false) }
     var showGoogleSheetsDialog by remember { mutableStateOf(false) }
     var submissionToDelete by remember { mutableStateOf<Pair<String, String>?>(null) }
     var publishedFormToDelete by remember { mutableStateOf<FormEntity?>(null) }
+
+    // SAF Excel File Picker state
+    var selectedUri by remember { mutableStateOf<Uri?>(null) }
+    var importedFileName by remember { mutableStateOf("") }
+    var availableSheets by remember { mutableStateOf<List<SheetInfo>>(emptyList()) }
+    var showSheetSelectDialog by remember { mutableStateOf(false) }
+    var selectedSheetInfo by remember { mutableStateOf<SheetInfo?>(null) }
+    var previewHeaders by remember { mutableStateOf<List<String>>(emptyList()) }
+    var showFormPreviewDialog by remember { mutableStateOf(false) }
+
+    val excelPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                val fileName = ExcelParser.getFileName(context, uri)
+                importedFileName = fileName
+                selectedUri = uri
+                val sheets = ExcelParser.listSheets(context, uri)
+                if (sheets.isEmpty()) {
+                    Toast.makeText(context, "Invalid Excel file or no sheets found.", Toast.LENGTH_LONG).show()
+                } else if (sheets.size == 1) {
+                    selectedSheetInfo = sheets.first()
+                    val headers = ExcelParser.parseHeaders(context, uri, sheets.first().sheetPath)
+                    if (headers.isEmpty()) {
+                        Toast.makeText(context, "No header row found in selected worksheet.", Toast.LENGTH_LONG).show()
+                    } else {
+                        previewHeaders = headers
+                        showFormPreviewDialog = true
+                        showExcelImportDialog = false
+                    }
+                } else {
+                    availableSheets = sheets
+                    showSheetSelectDialog = true
+                    showExcelImportDialog = false
+                }
+            } catch (e: Exception) {
+                Log.e("FormsScreen", "Error reading Excel file", e)
+                Toast.makeText(context, "Failed to read Excel file: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     val subTabTitles = listOf("Published Forms", "Filled Forms", "Pending Forms", "Returned for Corrections")
 
@@ -635,6 +704,16 @@ fun FormsScreen(
     if (showExcelImportDialog) {
         ExcelImportDialog(
             onDismiss = { showExcelImportDialog = false },
+            onPickExcelFile = {
+                excelPickerLauncher.launch(
+                    arrayOf(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "application/vnd.ms-excel",
+                        "application/octet-stream",
+                        "*/*"
+                    )
+                )
+            },
             onImport = { title, desc, createdBy, headersCsv ->
                 onImportFromExcel(title, desc, createdBy, headersCsv)
                 showExcelImportDialog = false
@@ -642,6 +721,53 @@ fun FormsScreen(
             onOpenGoogleSheetsWindow = {
                 showExcelImportDialog = false
                 showGoogleSheetsDialog = true
+            }
+        )
+    }
+
+    if (showSheetSelectDialog && availableSheets.isNotEmpty()) {
+        SheetSelectDialog(
+            fileName = importedFileName,
+            sheets = availableSheets,
+            onDismiss = { showSheetSelectDialog = false },
+            onSheetSelected = { sheet ->
+                selectedSheetInfo = sheet
+                showSheetSelectDialog = false
+                if (selectedUri != null) {
+                    val headers = ExcelParser.parseHeaders(context, selectedUri!!, sheet.sheetPath)
+                    if (headers.isEmpty()) {
+                        Toast.makeText(context, "No header row found in sheet ${sheet.name}", Toast.LENGTH_LONG).show()
+                    } else {
+                        previewHeaders = headers
+                        showFormPreviewDialog = true
+                    }
+                }
+            }
+        )
+    }
+
+    if (showFormPreviewDialog && previewHeaders.isNotEmpty()) {
+        ExcelFormPreviewDialog(
+            fileName = importedFileName,
+            sheetName = selectedSheetInfo?.name ?: "Sheet1",
+            initialHeaders = previewHeaders,
+            onDismiss = { showFormPreviewDialog = false },
+            onPublish = { title, desc, fields, onSuccess, onError ->
+                onPublishFormToSupabase(
+                    title,
+                    desc,
+                    importedFileName,
+                    selectedSheetInfo?.name ?: "Sheet1",
+                    fields,
+                    {
+                        showFormPreviewDialog = false
+                        onSuccess()
+                        onRefreshForms()
+                    },
+                    { err ->
+                        onError(err)
+                    }
+                )
             }
         )
     }
@@ -780,6 +906,7 @@ fun CreateFormDialog(
 @Composable
 fun ExcelImportDialog(
     onDismiss: () -> Unit,
+    onPickExcelFile: () -> Unit = {},
     onImport: (String, String, String, String) -> Unit,
     onOpenGoogleSheetsWindow: () -> Unit = {}
 ) {
@@ -798,10 +925,32 @@ fun ExcelImportDialog(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Import Excel column headers from device or Google Drive. Each header becomes a form field.",
+                    text = "Select an Excel (.xlsx) file from device storage, or open Google Sheets to copy headers.",
                     fontSize = 12.sp,
                     color = TextSecondary
                 )
+
+                Button(
+                    onClick = onPickExcelFile,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Filled.FileOpen, contentDescription = "Select File")
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Select Excel (.xlsx) File from Device", fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Divider(modifier = Modifier.weight(1f), color = SurfaceCardBorder)
+                    Text("  OR  ", fontSize = 11.sp, color = TextMuted, fontWeight = FontWeight.Bold)
+                    Divider(modifier = Modifier.weight(1f), color = SurfaceCardBorder)
+                }
 
                 // ACTION ROW: OPEN GOOGLE SHEETS WINDOW IN APP
                 Button(
@@ -834,9 +983,9 @@ fun ExcelImportDialog(
                 OutlinedTextField(
                     value = headersCsv,
                     onValueChange = { headersCsv = it },
-                    label = { Text("Excel / Google Drive Column Headers (Comma Separated)") },
+                    label = { Text("Manual Headers Input (Comma Separated)") },
                     modifier = Modifier.fillMaxWidth(),
-                    minLines = 3,
+                    minLines = 2,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = TextDarkPrimary,
                         unfocusedTextColor = TextDarkPrimary
@@ -862,6 +1011,428 @@ fun ExcelImportDialog(
             }
         }
     )
+}
+
+@Composable
+fun SheetSelectDialog(
+    fileName: String,
+    sheets: List<SheetInfo>,
+    onDismiss: () -> Unit,
+    onSheetSelected: (SheetInfo) -> Unit
+) {
+    var selected by remember { mutableStateOf(sheets.firstOrNull()) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Column {
+                Text("Select Worksheet", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = ForestDarkGreen)
+                Text("File: $fileName", fontSize = 12.sp, color = TextSecondary)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                sheets.forEach { sheet ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { selected = sheet },
+                        color = if (selected?.sheetPath == sheet.sheetPath) BentoHeroBg else SurfaceWhite,
+                        border = androidx.compose.foundation.BorderStroke(
+                            1.dp,
+                            if (selected?.sheetPath == sheet.sheetPath) ForestDarkGreen else SurfaceCardBorder
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = selected?.sheetPath == sheet.sheetPath,
+                                onClick = { selected = sheet },
+                                colors = RadioButtonDefaults.colors(selectedColor = ForestDarkGreen)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(sheet.name, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = TextDarkPrimary)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    selected?.let { onSheetSelected(it) }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
+                enabled = selected != null
+            ) {
+                Text("Continue to Preview")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+        shape = RoundedCornerShape(24.dp)
+    )
+}
+
+data class PreviewFieldState(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    var label: String,
+    var fieldType: String = "TEXT",
+    var options: String = "",
+    var isRequired: Boolean = true
+)
+
+@Composable
+fun ExcelFormPreviewDialog(
+    fileName: String,
+    sheetName: String,
+    initialHeaders: List<String>,
+    onDismiss: () -> Unit,
+    onPublish: (
+        title: String,
+        desc: String,
+        fields: List<FormFieldEntity>,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) -> Unit
+) {
+    var formTitle by remember { mutableStateOf(fileName.substringBeforeLast(".")) }
+    var formDesc by remember { mutableStateOf("Dynamic form imported from Excel ($sheetName)") }
+    var fieldsList by remember(initialHeaders) {
+        mutableStateOf(
+            initialHeaders.mapIndexed { idx, h ->
+                PreviewFieldState(
+                    id = java.util.UUID.randomUUID().toString(),
+                    label = h,
+                    fieldType = if (h.lowercase().contains("count") || h.lowercase().contains("total") || h.lowercase().contains("number")) "NUMBER" else "TEXT",
+                    options = "",
+                    isRequired = true
+                )
+            }
+        )
+    }
+
+    var isPublishing by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf<String?>(null) }
+    var showConfirmDialog by remember { mutableStateOf(false) }
+
+    val isTitleValid = formTitle.isNotBlank()
+    val hasFields = fieldsList.isNotEmpty()
+    val areLabelsValid = fieldsList.all { it.label.isNotBlank() }
+    val areDropdownsValid = fieldsList.all { field ->
+        if (field.fieldType == "DROPDOWN") {
+            field.options.split(",").any { it.trim().isNotBlank() }
+        } else true
+    }
+    val isPublishValid = isTitleValid && hasFields && areLabelsValid && areDropdownsValid && !isPublishing
+
+    AlertDialog(
+        onDismissRequest = { if (!isPublishing) onDismiss() },
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Preview Excel Form", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = ForestDarkGreen)
+                    Text("File: $fileName (${fieldsList.size} fields)", fontSize = 11.sp, color = TextSecondary)
+                }
+                IconButton(onClick = onDismiss, enabled = !isPublishing) {
+                    Icon(Icons.Filled.Close, contentDescription = "Close")
+                }
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 480.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                OutlinedTextField(
+                    value = formTitle,
+                    onValueChange = { formTitle = it },
+                    label = { Text("Form Title *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextDarkPrimary,
+                        unfocusedTextColor = TextDarkPrimary,
+                        focusedBorderColor = ForestDarkGreen
+                    )
+                )
+
+                OutlinedTextField(
+                    value = formDesc,
+                    onValueChange = { formDesc = it },
+                    label = { Text("Description") },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextDarkPrimary,
+                        unfocusedTextColor = TextDarkPrimary,
+                        focusedBorderColor = ForestDarkGreen
+                    )
+                )
+
+                Text(
+                    text = "Configured Form Fields (${fieldsList.size}):",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = ForestDarkGreen
+                )
+
+                if (fieldsList.isEmpty()) {
+                    Text(
+                        text = "No fields remaining. Please add at least one field.",
+                        color = Color.Red,
+                        fontSize = 12.sp
+                    )
+                }
+
+                fieldsList.forEachIndexed { index, field ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = CardDefaults.cardColors(containerColor = MintBackground),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .clip(CircleShape)
+                                        .background(ForestDarkGreen),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("${index + 1}", color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+
+                                OutlinedTextField(
+                                    value = field.label,
+                                    onValueChange = { newLabel ->
+                                        fieldsList = fieldsList.toMutableList().apply {
+                                            this[index] = this[index].copy(label = newLabel)
+                                        }
+                                    },
+                                    label = { Text("Field Label *") },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = TextDarkPrimary,
+                                        unfocusedTextColor = TextDarkPrimary,
+                                        focusedBorderColor = ForestDarkGreen
+                                    )
+                                )
+
+                                IconButton(
+                                    onClick = {
+                                        fieldsList = fieldsList.toMutableList().apply { removeAt(index) }
+                                    }
+                                ) {
+                                    Icon(Icons.Filled.Delete, contentDescription = "Remove", tint = Color.Red)
+                                }
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text("Type:", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+
+                                var typeMenuExpanded by remember { mutableStateOf(false) }
+
+                                Box {
+                                    Surface(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { typeMenuExpanded = true },
+                                        color = SurfaceWhite,
+                                        border = androidx.compose.foundation.BorderStroke(1.dp, SurfaceCardBorder)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(field.fieldType, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = ForestDarkGreen)
+                                            Icon(Icons.Filled.ArrowDropDown, contentDescription = "Type", tint = ForestDarkGreen)
+                                        }
+                                    }
+
+                                    DropdownMenu(
+                                        expanded = typeMenuExpanded,
+                                        onDismissRequest = { typeMenuExpanded = false }
+                                    ) {
+                                        listOf("TEXT", "NUMBER", "DATE", "DROPDOWN", "YES_NO").forEach { typeOpt ->
+                                            DropdownMenuItem(
+                                                text = { Text(typeOpt) },
+                                                onClick = {
+                                                    fieldsList = fieldsList.toMutableList().apply {
+                                                        this[index] = this[index].copy(fieldType = typeOpt)
+                                                    }
+                                                    typeMenuExpanded = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.weight(1f))
+
+                                Text("Required:", fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                                Switch(
+                                    checked = field.isRequired,
+                                    onCheckedChange = { req ->
+                                        fieldsList = fieldsList.toMutableList().apply {
+                                            this[index] = this[index].copy(isRequired = req)
+                                        }
+                                    },
+                                    colors = SwitchDefaults.colors(checkedThumbColor = ForestDarkGreen, checkedTrackColor = MintBackground)
+                                )
+                            }
+
+                            if (field.fieldType == "DROPDOWN") {
+                                OutlinedTextField(
+                                    value = field.options,
+                                    onValueChange = { opts ->
+                                        fieldsList = fieldsList.toMutableList().apply {
+                                            this[index] = this[index].copy(options = opts)
+                                        }
+                                    },
+                                    label = { Text("Options (comma-separated, e.g. Yes, No, N/A)") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = TextDarkPrimary,
+                                        unfocusedTextColor = TextDarkPrimary
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
+                TextButton(
+                    onClick = {
+                        fieldsList = fieldsList + PreviewFieldState(
+                            id = java.util.UUID.randomUUID().toString(),
+                            label = "New Custom Field ${fieldsList.size + 1}",
+                            fieldType = "TEXT",
+                            options = "",
+                            isRequired = true
+                        )
+                    }
+                ) {
+                    Icon(Icons.Filled.Add, contentDescription = "Add")
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("+ Add Field", color = ForestDarkGreen, fontWeight = FontWeight.Bold)
+                }
+
+                if (errorMessage != null) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEBEE))
+                    ) {
+                        Text(
+                            text = errorMessage ?: "",
+                            color = Color.Red,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { showConfirmDialog = true },
+                colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
+                enabled = isPublishValid
+            ) {
+                if (isPublishing) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Publishing...")
+                } else {
+                    Text("Publish Form")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isPublishing) {
+                Text("Cancel")
+            }
+        },
+        shape = RoundedCornerShape(24.dp)
+    )
+
+    if (showConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { showConfirmDialog = false },
+            title = { Text("Publish Form", fontWeight = FontWeight.Bold, fontSize = 18.sp) },
+            text = { Text("Publish this form to all registered School Users? Once published, teachers will be able to fill and submit responses.") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showConfirmDialog = false
+                        isPublishing = true
+                        errorMessage = null
+                        val formFields = fieldsList.mapIndexed { idx, pf ->
+                            FormFieldEntity(
+                                id = pf.id,
+                                formId = "",
+                                label = pf.label.trim(),
+                                fieldType = pf.fieldType,
+                                options = pf.options.trim(),
+                                isRequired = pf.isRequired,
+                                orderIndex = idx
+                            )
+                        }
+                        onPublish(
+                            formTitle,
+                            formDesc,
+                            formFields,
+                            {
+                                isPublishing = false
+                            },
+                            { err ->
+                                isPublishing = false
+                                errorMessage = err
+                            }
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen)
+                ) {
+                    Text("Publish")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmDialog = false }) {
+                    Text("Cancel")
+                }
+            },
+            shape = RoundedCornerShape(20.dp)
+        )
+    }
 }
 
 @Composable

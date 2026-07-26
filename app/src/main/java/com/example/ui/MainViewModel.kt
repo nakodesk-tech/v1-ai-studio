@@ -112,6 +112,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
+        syncPublishedForms()
         // Requirement 10: Check existing session and re-verify public.profiles on startup
         viewModelScope.launch {
             val restoreResult = repository.validateAndRestoreSession()
@@ -201,6 +202,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             repository.createFormFromExcelHeaders(title, description, createdBy, headers)
             _events.emit(UIEvent.ShowToast("Form generated from Excel columns (${headers.size} fields)!"))
+            onComplete()
+        }
+    }
+
+    fun publishFormToSupabase(
+        title: String,
+        description: String,
+        sourceFileName: String,
+        sourceSheetName: String,
+        fields: List<FormFieldEntity>,
+        onSuccess: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            val res = repository.publishFormToSupabase(
+                title = title,
+                description = description,
+                sourceFileName = sourceFileName,
+                sourceSheetName = sourceSheetName,
+                fields = fields
+            )
+            if (res.isSuccess) {
+                _events.emit(UIEvent.ShowToast("Form published successfully"))
+                onSuccess()
+            } else {
+                val err = res.exceptionOrNull()?.message ?: "Failed to publish form."
+                _events.emit(UIEvent.ShowToast("Publish Error: $err"))
+                onError(err)
+            }
+        }
+    }
+
+    fun syncPublishedForms(onComplete: () -> Unit = {}) {
+        viewModelScope.launch {
+            repository.syncPublishedFormsFromSupabase()
             onComplete()
         }
     }

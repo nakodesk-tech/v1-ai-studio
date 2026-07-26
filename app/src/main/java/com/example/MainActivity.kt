@@ -231,6 +231,12 @@ fun MainAppScreen(
                             },
                             onDeletePublishedForm = { formId ->
                                 viewModel.deletePublishedForm(formId)
+                            },
+                            onPublishFormToSupabase = { title, desc, fileName, sheetName, fields, onSuccess, onError ->
+                                viewModel.publishFormToSupabase(title, desc, fileName, sheetName, fields, onSuccess, onError)
+                            },
+                            onRefreshForms = {
+                                viewModel.syncPublishedForms()
                             }
                         )
                     }

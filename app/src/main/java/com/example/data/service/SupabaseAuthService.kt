@@ -603,4 +603,205 @@ class SupabaseAuthService {
             .replace("\r", "\\r")
             .replace("\t", "\\t")
     }
+
+    suspend fun publishFormToSupabase(
+        formDto: SupabaseFormDto,
+        fieldDtos: List<SupabaseFormFieldDto>,
+        accessToken: String
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val baseUrl = getBaseUrl()
+            val anonKey = getAnonKey()
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+
+            val formUrl = "$baseUrl/rest/v1/forms"
+
+            val formJson = """
+                {
+                  "id": "${escapeJson(formDto.id)}",
+                  "title": "${escapeJson(formDto.title)}",
+                  "description": "${escapeJson(formDto.description ?: "")}",
+                  "created_by": "${escapeJson(formDto.created_by ?: "")}",
+                  "created_by_name": "${escapeJson(formDto.created_by_name ?: "")}",
+                  "status": "${escapeJson(formDto.status ?: "PUBLISHED")}",
+                  "source_type": "${escapeJson(formDto.source_type ?: "EXCEL")}",
+                  "source_file_name": "${escapeJson(formDto.source_file_name ?: "")}",
+                  "source_sheet_name": "${escapeJson(formDto.source_sheet_name ?: "")}",
+                  "created_at": "${formDto.created_at ?: ""}",
+                  "published_at": "${formDto.published_at ?: ""}"
+                }
+            """.trimIndent()
+
+            val formReq = Request.Builder()
+                .url(formUrl)
+                .post(formJson.toRequestBody(mediaType))
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", "Bearer $accessToken")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "return=representation")
+                .build()
+
+            Log.d("SupabaseAuth", "Publishing form row to $formUrl")
+
+            client.newCall(formReq).execute().use { formResp ->
+                val formRespStr = formResp.body?.string() ?: ""
+                Log.d("SupabaseAuth", "Form publish response code: ${formResp.code}, body: $formRespStr")
+
+                if (!formResp.isSuccessful) {
+                    val errMsg = parseErrorMessage(formRespStr) ?: "Supabase form creation failed (Code ${formResp.code}): $formRespStr"
+                    return@withContext Result.failure(Exception(errMsg))
+                }
+            }
+
+            // Step 2: Insert form_fields
+            val fieldsUrl = "$baseUrl/rest/v1/form_fields"
+            val fieldsJsonArray = fieldDtos.joinToString(prefix = "[", postfix = "]") { field ->
+                """
+                {
+                  "id": "${escapeJson(field.id)}",
+                  "form_id": "${escapeJson(field.form_id)}",
+                  "label": "${escapeJson(field.label)}",
+                  "field_type": "${escapeJson(field.field_type)}",
+                  "options": "${escapeJson(field.options ?: "")}",
+                  "is_required": ${field.is_required ?: true},
+                  "order_index": ${field.order_index ?: 0},
+                  "created_at": "${field.created_at ?: ""}"
+                }
+                """.trimIndent()
+            }
+
+            val fieldsReq = Request.Builder()
+                .url(fieldsUrl)
+                .post(fieldsJsonArray.toRequestBody(mediaType))
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", "Bearer $accessToken")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Prefer", "return=representation")
+                .build()
+
+            Log.d("SupabaseAuth", "Publishing ${fieldDtos.size} form_fields to $fieldsUrl")
+
+            client.newCall(fieldsReq).execute().use { fieldsResp ->
+                val fieldsRespStr = fieldsResp.body?.string() ?: ""
+                Log.d("SupabaseAuth", "Form fields publish response code: ${fieldsResp.code}, body: $fieldsRespStr")
+
+                if (!fieldsResp.isSuccessful) {
+                    val errMsg = parseErrorMessage(fieldsRespStr) ?: "Supabase form_fields creation failed (Code ${fieldsResp.code}): $fieldsRespStr"
+
+                    // SAFE PUBLISHING: attempt to remove incomplete form
+                    try {
+                        val deleteUrl = "$baseUrl/rest/v1/forms?id=eq.${formDto.id}"
+                        val deleteReq = Request.Builder()
+                            .url(deleteUrl)
+                            .delete()
+                            .addHeader("apikey", anonKey)
+                            .addHeader("Authorization", "Bearer $accessToken")
+                            .build()
+                        client.newCall(deleteReq).execute().use { _ -> }
+                        Log.w("SupabaseAuth", "Attempted cleanup of incomplete form ${formDto.id}")
+                    } catch (e: Exception) {
+                        Log.e("SupabaseAuth", "Failed to cleanup incomplete form ${formDto.id}", e)
+                    }
+
+                    return@withContext Result.failure(Exception(errMsg))
+                }
+            }
+
+            Result.success(formDto.id)
+        } catch (e: Exception) {
+            Log.e("SupabaseAuth", "publishFormToSupabase Exception", e)
+            Result.failure(e)
+        }
+    }
+
+    suspend fun fetchPublishedFormsFromSupabase(
+        accessToken: String? = null
+    ): Result<Pair<List<SupabaseFormDto>, List<SupabaseFormFieldDto>>> = withContext(Dispatchers.IO) {
+        try {
+            val baseUrl = getBaseUrl()
+            val anonKey = getAnonKey()
+            val authHeader = if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $anonKey"
+
+            val formsUrl = "$baseUrl/rest/v1/forms?status=eq.PUBLISHED&select=*&order=created_at.desc"
+            val formsReq = Request.Builder()
+                .url(formsUrl)
+                .get()
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", authHeader)
+                .build()
+
+            val formsList = mutableListOf<SupabaseFormDto>()
+            val moshiFormsAdapter = moshi.adapter<List<SupabaseFormDto>>(
+                com.squareup.moshi.Types.newParameterizedType(List::class.java, SupabaseFormDto::class.java)
+            )
+
+            client.newCall(formsReq).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: ""
+                if (resp.isSuccessful) {
+                    val parsed = moshiFormsAdapter.fromJson(bodyStr)
+                    if (parsed != null) {
+                        formsList.addAll(parsed)
+                    }
+                } else {
+                    val errMsg = parseErrorMessage(bodyStr) ?: "Failed to fetch published forms (Code ${resp.code})"
+                    return@withContext Result.failure(Exception(errMsg))
+                }
+            }
+
+            val fieldsUrl = "$baseUrl/rest/v1/form_fields?select=*&order=order_index.asc"
+            val fieldsReq = Request.Builder()
+                .url(fieldsUrl)
+                .get()
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", authHeader)
+                .build()
+
+            val fieldsList = mutableListOf<SupabaseFormFieldDto>()
+            val moshiFieldsAdapter = moshi.adapter<List<SupabaseFormFieldDto>>(
+                com.squareup.moshi.Types.newParameterizedType(List::class.java, SupabaseFormFieldDto::class.java)
+            )
+
+            client.newCall(fieldsReq).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: ""
+                if (resp.isSuccessful) {
+                    val parsed = moshiFieldsAdapter.fromJson(bodyStr)
+                    if (parsed != null) {
+                        fieldsList.addAll(parsed)
+                    }
+                } else {
+                    Log.w("SupabaseAuth", "Failed to fetch form_fields: Code ${resp.code} Body: $bodyStr")
+                }
+            }
+
+            Result.success(Pair(formsList, fieldsList))
+        } catch (e: Exception) {
+            Log.e("SupabaseAuth", "fetchPublishedFormsFromSupabase Exception", e)
+            Result.failure(e)
+        }
+    }
 }
+
+data class SupabaseFormDto(
+    val id: String,
+    val title: String,
+    val description: String? = null,
+    val created_by: String? = null,
+    val created_by_name: String? = null,
+    val status: String? = "PUBLISHED",
+    val source_type: String? = "EXCEL",
+    val source_file_name: String? = null,
+    val source_sheet_name: String? = null,
+    val created_at: String? = null,
+    val published_at: String? = null
+)
+
+data class SupabaseFormFieldDto(
+    val id: String,
+    val form_id: String,
+    val label: String,
+    val field_type: String,
+    val options: String? = null,
+    val is_required: Boolean? = true,
+    val order_index: Int? = 0,
+    val created_at: String? = null
+)

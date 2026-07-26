@@ -549,17 +549,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun resetUserPassword(udiseCode: String, newPassword: String = "Pass@123") {
+    fun resetUserPassword(
+        targetUserId: String,
+        newPassword: String = "Pass@123",
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            repository.resetUserPassword(udiseCode, newPassword)
-            _events.emit(UIEvent.ShowToast("Password for $udiseCode reset to default: $newPassword"))
+            _isSyncingUsers.value = true
+            val result = repository.resetUserPassword(targetUserId, newPassword)
+            _isSyncingUsers.value = false
+            if (result.isSuccess) {
+                _events.emit(UIEvent.ShowToast("Password updated successfully"))
+                onSuccess()
+            } else {
+                val err = result.exceptionOrNull()?.message ?: "Failed to reset password."
+                android.util.Log.e("MainViewModel", "resetUserPassword error: $err")
+                _events.emit(UIEvent.ShowToast("Error: $err"))
+                onError(err)
+            }
         }
     }
 
-    fun deleteUser(udiseCode: String) {
+    fun deleteUser(
+        targetUserId: String,
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            repository.deleteUser(udiseCode)
-            _events.emit(UIEvent.ShowToast("User $udiseCode deleted successfully."))
+            _isSyncingUsers.value = true
+            val result = repository.deleteUser(targetUserId)
+            _isSyncingUsers.value = false
+            if (result.isSuccess) {
+                _events.emit(UIEvent.ShowToast("User deleted successfully."))
+                onSuccess()
+            } else {
+                val err = result.exceptionOrNull()?.message ?: "Failed to delete user."
+                android.util.Log.e("MainViewModel", "deleteUser error: $err")
+                _events.emit(UIEvent.ShowToast("Error: $err"))
+                onError(err)
+            }
         }
     }
 

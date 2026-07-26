@@ -51,8 +51,8 @@ fun ProfileSyncScreen(
     onRegisterSchool: (udiseCode: String, schoolName: String, hmName: String, phone: String, email: String, password: String, role: UserRole, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
     onCreateAccount: (role: UserRole, fullName: String, email: String, password: String, confirmPassword: String, schoolName: String, udiseNumber: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
     onChangePassword: (oldPass: String, newPass: String, confirmPass: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _ -> },
-    onResetUserPassword: (udiseCode: String) -> Unit = {},
-    onDeleteUser: (udiseCode: String) -> Unit = {},
+    onResetUserPassword: (targetUserId: String, newPass: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _ -> },
+    onDeleteUser: (targetUserId: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _ -> },
     onUpdateUserInfo: (udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String) -> Unit = { _, _, _, _, _, _ -> },
     onLogout: (() -> Unit)? = null
 ) {
@@ -75,6 +75,7 @@ fun ProfileSyncScreen(
     var showManageUsersDialog by remember { mutableStateOf(false) }
     var editingUser by remember { mutableStateOf<UserEntity?>(null) }
     var userToDelete by remember { mutableStateOf<UserEntity?>(null) }
+    var userToResetPassword by remember { mutableStateOf<UserEntity?>(null) }
 
     // Section state for Officer User & Role Management (0: Officers, 1: School Users, 2: Add New Account)
     var selectedSectionTab by remember { mutableStateOf(0) }
@@ -505,10 +506,7 @@ fun ProfileSyncScreen(
                                             OfficerUserCardItem(
                                                 user = usr,
                                                 onEdit = { editingUser = usr },
-                                                onResetPassword = {
-                                                    onResetUserPassword(usr.udiseCode)
-                                                    Toast.makeText(context, "Password for ${usr.email.ifBlank { usr.udiseCode }} reset to Pass@123", Toast.LENGTH_LONG).show()
-                                                },
+                                                onResetPassword = { userToResetPassword = usr },
                                                 onDelete = { userToDelete = usr }
                                             )
                                         }
@@ -561,10 +559,7 @@ fun ProfileSyncScreen(
                                             SchoolUserCardItem(
                                                 user = usr,
                                                 onEdit = { editingUser = usr },
-                                                onResetPassword = {
-                                                    onResetUserPassword(usr.udiseCode)
-                                                    Toast.makeText(context, "Password for ${usr.schoolName.ifBlank { usr.udiseCode }} reset to Pass@123", Toast.LENGTH_LONG).show()
-                                                },
+                                                onResetPassword = { userToResetPassword = usr },
                                                 onDelete = { userToDelete = usr }
                                             )
                                         }
@@ -1107,18 +1102,15 @@ fun ProfileSyncScreen(
                                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            // RESET PASSWORD TO Pass@123
+                                            // RESET PASSWORD
                                             Button(
-                                                onClick = {
-                                                    onResetUserPassword(usr.udiseCode)
-                                                    Toast.makeText(context, "Password for ${usr.udiseCode} reset to Pass@123", Toast.LENGTH_LONG).show()
-                                                },
+                                                onClick = { userToResetPassword = usr },
                                                 modifier = Modifier.weight(1f).height(32.dp),
                                                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
                                                 contentPadding = PaddingValues(0.dp),
                                                 shape = RoundedCornerShape(10.dp)
                                             ) {
-                                                Text("Reset Pass@123", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                                Text("Reset Password", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                             }
 
                                             // EDIT USER INFO
@@ -1150,37 +1142,96 @@ fun ProfileSyncScreen(
             shape = RoundedCornerShape(24.dp)
         )
 
-        // WARNING CONFIRMATION DIALOG FOR DELETING USER
+        // CONFIRMATION DIALOG FOR DELETING USER
         userToDelete?.let { targetUsr ->
+            var isDeleting by remember { mutableStateOf(false) }
+            var deleteError by remember { mutableStateOf<String?>(null) }
+
             AlertDialog(
-                onDismissRequest = { userToDelete = null },
+                onDismissRequest = { if (!isDeleting) userToDelete = null },
                 icon = {
                     Icon(Icons.Filled.Warning, contentDescription = "Warning", tint = Color(0xFFDC2626), modifier = Modifier.size(36.dp))
                 },
                 title = {
-                    Text("Delete Registered User Warning", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = TextDarkPrimary)
+                    Text("Permanently delete this account?", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = TextDarkPrimary)
                 },
                 text = {
-                    Text(
-                        "Are you sure you want to delete user '${targetUsr.headmasterName}' (${targetUsr.udiseCode})?\n\nRole: ${targetUsr.role}\nSchool/Office: ${targetUsr.schoolName}\n\nThis will permanently revoke access for this account. This action cannot be undone.",
-                        fontSize = 13.sp,
-                        color = TextSecondary
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "User: ${targetUsr.headmasterName.ifBlank { "User" }}",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextDarkPrimary
+                        )
+                        Text(
+                            text = "Email: ${if (targetUsr.email.isBlank()) targetUsr.udiseCode else targetUsr.email}",
+                            fontSize = 13.sp,
+                            color = TextSecondary
+                        )
+                        Text(
+                            text = "Role: ${targetUsr.role} | School/Office: ${targetUsr.schoolName}",
+                            fontSize = 12.sp,
+                            color = TextMuted
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "This action will permanently remove this user account from Supabase Auth and profiles. This cannot be undone.",
+                            fontSize = 12.sp,
+                            color = Color(0xFFDC2626),
+                            fontWeight = FontWeight.Medium
+                        )
+
+                        deleteError?.let { err ->
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Surface(
+                                color = Color(0xFFFFEBEE),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = err,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFFC62828),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                    }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
-                            onDeleteUser(targetUsr.udiseCode)
-                            Toast.makeText(context, "User ${targetUsr.udiseCode} deleted", Toast.LENGTH_SHORT).show()
-                            userToDelete = null
+                            isDeleting = true
+                            deleteError = null
+                            onDeleteUser(
+                                targetUsr.udiseCode,
+                                {
+                                    isDeleting = false
+                                    userToDelete = null
+                                    Toast.makeText(context, "Account permanently deleted", Toast.LENGTH_SHORT).show()
+                                },
+                                { err ->
+                                    isDeleting = false
+                                    deleteError = err
+                                }
+                            )
                         },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                        enabled = !isDeleting,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                        modifier = Modifier.testTag("btn_confirm_delete_user")
                     ) {
+                        if (isDeleting) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         Text("Confirm Delete", fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
-                    OutlinedButton(onClick = { userToDelete = null }) {
+                    OutlinedButton(
+                        onClick = { userToDelete = null },
+                        enabled = !isDeleting
+                    ) {
                         Text("Cancel")
                     }
                 },
@@ -1188,8 +1239,148 @@ fun ProfileSyncScreen(
             )
         }
 
+        // RESET PASSWORD DIALOG FOR USER
+        userToResetPassword?.let { targetUsr ->
+            var newPassword by remember { mutableStateOf("") }
+            var confirmPassword by remember { mutableStateOf("") }
+            var passwordVisible by remember { mutableStateOf(false) }
+            var confirmPasswordVisible by remember { mutableStateOf(false) }
+            var isResetting by remember { mutableStateOf(false) }
+            var resetError by remember { mutableStateOf<String?>(null) }
+
+            val dialogFieldColors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = TextDarkPrimary,
+                unfocusedTextColor = TextDarkPrimary,
+                focusedBorderColor = ForestDarkGreen,
+                unfocusedBorderColor = SurfaceCardBorder,
+                focusedLabelColor = ForestDarkGreen,
+                unfocusedLabelColor = TextDarkPrimary,
+                focusedContainerColor = SurfaceWhite,
+                unfocusedContainerColor = SurfaceWhite
+            )
+
+            AlertDialog(
+                onDismissRequest = { if (!isResetting) userToResetPassword = null },
+                title = { Text("Reset User Password", fontSize = 17.sp, fontWeight = FontWeight.Bold) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(
+                            text = "User: ${targetUsr.headmasterName.ifBlank { "User" }}",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = TextDarkPrimary
+                        )
+                        Text(
+                            text = "Email: ${if (targetUsr.email.isBlank()) targetUsr.udiseCode else targetUsr.email}",
+                            fontSize = 12.sp,
+                            color = TextMuted
+                        )
+
+                        OutlinedTextField(
+                            value = newPassword,
+                            onValueChange = { newPassword = it },
+                            label = { Text("New Password (min 6 chars) *") },
+                            singleLine = true,
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        imageVector = if (passwordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                        contentDescription = "Toggle Password Visibility"
+                                    )
+                                }
+                            },
+                            colors = dialogFieldColors,
+                            modifier = Modifier.fillMaxWidth().testTag("input_reset_new_password")
+                        )
+
+                        OutlinedTextField(
+                            value = confirmPassword,
+                            onValueChange = { confirmPassword = it },
+                            label = { Text("Confirm New Password *") },
+                            singleLine = true,
+                            visualTransformation = if (confirmPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            trailingIcon = {
+                                IconButton(onClick = { confirmPasswordVisible = !confirmPasswordVisible }) {
+                                    Icon(
+                                        imageVector = if (confirmPasswordVisible) Icons.Filled.Visibility else Icons.Filled.VisibilityOff,
+                                        contentDescription = "Toggle Confirm Password Visibility"
+                                    )
+                                }
+                            },
+                            colors = dialogFieldColors,
+                            modifier = Modifier.fillMaxWidth().testTag("input_reset_confirm_password")
+                        )
+
+                        resetError?.let { err ->
+                            Surface(
+                                color = Color(0xFFFFEBEE),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = err,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFFC62828),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            if (newPassword.length < 6) {
+                                resetError = "Password must be at least 6 characters long."
+                                return@Button
+                            }
+                            if (newPassword != confirmPassword) {
+                                resetError = "Passwords do not match."
+                                return@Button
+                            }
+                            isResetting = true
+                            resetError = null
+                            onResetUserPassword(
+                                targetUsr.udiseCode,
+                                newPassword,
+                                {
+                                    isResetting = false
+                                    userToResetPassword = null
+                                    Toast.makeText(context, "Password updated successfully", Toast.LENGTH_SHORT).show()
+                                },
+                                { err ->
+                                    isResetting = false
+                                    resetError = err
+                                }
+                            )
+                        },
+                        enabled = !isResetting,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFD97706)),
+                        modifier = Modifier.testTag("btn_submit_reset_password")
+                    ) {
+                        if (isResetting) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
+                        Text("Reset Password", fontWeight = FontWeight.Bold)
+                    }
+                },
+                dismissButton = {
+                    OutlinedButton(
+                        onClick = { userToResetPassword = null },
+                        enabled = !isResetting
+                    ) {
+                        Text("Cancel")
+                    }
+                },
+                shape = RoundedCornerShape(20.dp)
+            )
+        }
+
         // EDIT USER SUB-DIALOG
         editingUser?.let { usrToEdit ->
+            val isOfficerToEdit = usrToEdit.role == "OFFICER"
             var editName by remember(usrToEdit) { mutableStateOf(usrToEdit.headmasterName) }
             var editPhone by remember(usrToEdit) { mutableStateOf(usrToEdit.phone) }
             var editSchoolName by remember(usrToEdit) {
@@ -1199,7 +1390,7 @@ fun ProfileSyncScreen(
 
             AlertDialog(
                 onDismissRequest = { editingUser = null },
-                title = { Text("Edit User Information", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
+                title = { Text(if (isOfficerToEdit) "Edit Officer Profile" else "Edit School User Profile", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
                 text = {
                     val dialogFieldColors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = TextDarkPrimary,
@@ -1220,22 +1411,24 @@ fun ProfileSyncScreen(
                             colors = dialogFieldColors,
                             modifier = Modifier.fillMaxWidth().testTag("input_edit_fullname")
                         )
-                        OutlinedTextField(
-                            value = editSchoolName,
-                            onValueChange = { editSchoolName = it },
-                            label = { Text("School Name") },
-                            singleLine = true,
-                            colors = dialogFieldColors,
-                            modifier = Modifier.fillMaxWidth().testTag("input_edit_school_name")
-                        )
-                        OutlinedTextField(
-                            value = editUdiseNumber,
-                            onValueChange = { editUdiseNumber = it },
-                            label = { Text("UDISE Number") },
-                            singleLine = true,
-                            colors = dialogFieldColors,
-                            modifier = Modifier.fillMaxWidth().testTag("input_edit_udise")
-                        )
+                        if (!isOfficerToEdit) {
+                            OutlinedTextField(
+                                value = editSchoolName,
+                                onValueChange = { editSchoolName = it },
+                                label = { Text("School Name *") },
+                                singleLine = true,
+                                colors = dialogFieldColors,
+                                modifier = Modifier.fillMaxWidth().testTag("input_edit_school_name")
+                            )
+                            OutlinedTextField(
+                                value = editUdiseNumber,
+                                onValueChange = { editUdiseNumber = it },
+                                label = { Text("UDISE Number *") },
+                                singleLine = true,
+                                colors = dialogFieldColors,
+                                modifier = Modifier.fillMaxWidth().testTag("input_edit_udise")
+                            )
+                        }
                         OutlinedTextField(
                             value = usrToEdit.email,
                             onValueChange = {},
@@ -1255,7 +1448,9 @@ fun ProfileSyncScreen(
                 confirmButton = {
                     Button(
                         onClick = {
-                            onUpdateUserInfo(usrToEdit.udiseCode, editName, editPhone, usrToEdit.email, editSchoolName, editUdiseNumber)
+                            val finalSchoolName = if (isOfficerToEdit) usrToEdit.schoolName else editSchoolName
+                            val finalUdiseNumber = if (isOfficerToEdit) usrToEdit.udiseNumber else editUdiseNumber
+                            onUpdateUserInfo(usrToEdit.udiseCode, editName, editPhone, usrToEdit.email, finalSchoolName, finalUdiseNumber)
                             editingUser = null
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
@@ -1632,7 +1827,7 @@ fun OfficerUserCardItem(
                     contentPadding = PaddingValues(0.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("Reset Pass@123", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Reset Password", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
 
                 OutlinedButton(
@@ -1729,7 +1924,7 @@ fun SchoolUserCardItem(
                     contentPadding = PaddingValues(0.dp),
                     shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text("Reset Pass@123", fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                    Text("Reset Password", fontSize = 10.sp, fontWeight = FontWeight.Bold)
                 }
 
                 OutlinedButton(

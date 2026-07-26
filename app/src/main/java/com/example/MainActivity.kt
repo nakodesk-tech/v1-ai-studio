@@ -299,11 +299,11 @@ fun MainAppScreen(
                             onChangePassword = { oldPass, newPass, confirmPass, onSuccess, onError ->
                                 viewModel.changeCurrentUserPassword(oldPass, newPass, confirmPass, onSuccess, onError)
                             },
-                            onResetUserPassword = { udiseCode ->
-                                viewModel.resetUserPassword(udiseCode)
+                            onResetUserPassword = { targetUserId, newPass, onSuccess, onError ->
+                                viewModel.resetUserPassword(targetUserId, newPass, onSuccess, onError)
                             },
-                            onDeleteUser = { udiseCode ->
-                                viewModel.deleteUser(udiseCode)
+                            onDeleteUser = { targetUserId, onSuccess, onError ->
+                                viewModel.deleteUser(targetUserId, onSuccess, onError)
                             },
                             onUpdateUserInfo = { udiseCode, name, phone, email, schoolName, udiseNumber ->
                                 viewModel.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)

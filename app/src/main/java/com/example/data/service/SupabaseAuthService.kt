@@ -538,6 +538,63 @@ class SupabaseAuthService {
         }
     }
 
+    suspend fun manageUserAction(
+        action: String,
+        targetUserId: String,
+        newPassword: String? = null,
+        accessToken: String? = null
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        try {
+            if (accessToken.isNullOrBlank()) {
+                Log.e("SupabaseAuth", "manageUserAction failed: Officer access token is missing or blank.")
+                return@withContext Result.failure(Exception("Officer access token is missing. Please sign in again."))
+            }
+
+            val baseUrl = getBaseUrl()
+            val anonKey = getAnonKey()
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+
+            // Safe diagnostic logging: indicates token existence/length, NEVER logs actual token or password
+            Log.d("SupabaseAuth", "Calling manage-user Edge Function: action=$action, targetUserId=$targetUserId, token length=${accessToken.length}")
+
+            val edgeUrl = "$baseUrl/functions/v1/manage-user"
+            val jsonParts = mutableListOf<String>()
+            jsonParts.add("\"action\": \"${escapeJson(action)}\"")
+            jsonParts.add("\"user_id\": \"${escapeJson(targetUserId)}\"")
+            if (action == "reset_password" && !newPassword.isNullOrBlank()) {
+                jsonParts.add("\"new_password\": \"${escapeJson(newPassword)}\"")
+            }
+
+            val edgeBody = "{ " + jsonParts.joinToString(", ") + " }"
+
+            val edgeReq = Request.Builder()
+                .url(edgeUrl)
+                .post(edgeBody.toRequestBody(mediaType))
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", "Bearer $accessToken")
+                .addHeader("Content-Type", "application/json")
+                .build()
+
+            Log.d("SupabaseAuth", "Posting to Edge Function: $edgeUrl")
+
+            client.newCall(edgeReq).execute().use { resp ->
+                val respStr = resp.body?.string() ?: ""
+                Log.d("SupabaseAuth", "manage-user response code: ${resp.code}, body: $respStr")
+
+                if (resp.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    val errMessage = "HTTP status: ${resp.code} ${resp.message}\nResponse: $respStr"
+                    Log.e("SupabaseAuth", "manage-user Edge Function failed: $errMessage")
+                    Result.failure(Exception(errMessage))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SupabaseAuth", "manageUserAction Exception", e)
+            Result.failure(e)
+        }
+    }
+
     private fun escapeJson(str: String): String {
         return str
             .replace("\\", "\\\\")

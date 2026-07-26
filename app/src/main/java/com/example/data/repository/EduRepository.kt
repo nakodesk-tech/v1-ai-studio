@@ -66,13 +66,41 @@ class EduRepository(context: Context) {
 
     val allUsers: Flow<List<UserEntity>> = userDao.getAllUsersFlow()
 
-    suspend fun resetUserPassword(udiseCode: String, newPasswordHash: String = "Pass@123") {
-        userDao.resetUserPassword(udiseCode, newPasswordHash)
+    suspend fun resetUserPassword(targetUserId: String, newPassword: String): Result<Boolean> {
+        val token = refreshCurrentSessionIfNeeded() ?: getSavedSessionToken()
+        val res = supabaseAuthService.manageUserAction(
+            action = "reset_password",
+            targetUserId = targetUserId,
+            newPassword = newPassword,
+            accessToken = token
+        )
+
+        if (res.isSuccess) {
+            userDao.resetUserPassword(targetUserId, newPassword)
+            return Result.success(true)
+        } else {
+            val err = res.exceptionOrNull()?.message ?: "Failed to reset password on Supabase."
+            return Result.failure(Exception(err))
+        }
     }
 
-    suspend fun deleteUser(udiseCode: String) {
-        userDao.deleteUser(udiseCode)
-        schoolDao.deleteSchool(udiseCode)
+    suspend fun deleteUser(targetUserId: String): Result<Boolean> {
+        val token = refreshCurrentSessionIfNeeded() ?: getSavedSessionToken()
+        val res = supabaseAuthService.manageUserAction(
+            action = "delete",
+            targetUserId = targetUserId,
+            accessToken = token
+        )
+
+        if (res.isSuccess) {
+            userDao.deleteUser(targetUserId)
+            schoolDao.deleteSchool(targetUserId)
+            syncUsersFromSupabase()
+            return Result.success(true)
+        } else {
+            val err = res.exceptionOrNull()?.message ?: "Failed to delete user on Supabase."
+            return Result.failure(Exception(err))
+        }
     }
 
     suspend fun deleteSchool(schoolId: String) {

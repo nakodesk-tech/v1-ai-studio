@@ -28,15 +28,25 @@ class EduRepository(context: Context) {
     private val supabaseAuthService = com.example.data.service.SupabaseAuthService()
     private val sessionPrefs = context.getSharedPreferences("supa_session_prefs", Context.MODE_PRIVATE)
 
-    fun saveSession(userId: String, email: String, token: String, fullName: String, role: String) {
-        sessionPrefs.edit()
+    fun saveSession(
+        userId: String,
+        email: String,
+        token: String,
+        fullName: String,
+        role: String,
+        refreshToken: String? = null
+    ) {
+        val editor = sessionPrefs.edit()
             .putString("session_user_id", userId)
             .putString("session_email", email)
             .putString("session_token", token)
             .putString("session_full_name", fullName)
             .putString("session_role", role)
             .putBoolean("is_logged_in", true)
-            .apply()
+        if (!refreshToken.isNullOrBlank()) {
+            editor.putString("session_refresh_token", refreshToken)
+        }
+        editor.apply()
     }
 
     fun clearSession() {
@@ -45,6 +55,7 @@ class EduRepository(context: Context) {
 
     fun getSavedSessionUserId(): String? = sessionPrefs.getString("session_user_id", null)
     fun getSavedSessionToken(): String? = sessionPrefs.getString("session_token", null)
+    fun getSavedRefreshToken(): String? = sessionPrefs.getString("session_refresh_token", null)
     fun getSavedSessionEmail(): String? = sessionPrefs.getString("session_email", null)
     fun isSessionLoggedIn(): Boolean = sessionPrefs.getBoolean("is_logged_in", false)
 
@@ -207,6 +218,8 @@ class EduRepository(context: Context) {
         val userId = user?.id ?: ""
         val accessToken = resp?.access_token ?: ""
 
+        val refreshToken = resp?.refresh_token
+
         if (userId.isBlank()) {
             return Result.failure(Exception("Supabase authentication failed to return a valid User ID."))
         }
@@ -249,7 +262,8 @@ class EduRepository(context: Context) {
             email = finalEmail,
             token = accessToken,
             fullName = finalFullName,
-            role = finalRoleStr
+            role = finalRoleStr,
+            refreshToken = refreshToken
         )
 
         return Result.success(loggedInUser)
@@ -370,6 +384,29 @@ class EduRepository(context: Context) {
         }
     }
 
+    suspend fun refreshCurrentSessionIfNeeded(): String? {
+        var token = getSavedSessionToken()
+        val refreshTokenStr = getSavedRefreshToken()
+
+        if (!refreshTokenStr.isNullOrBlank()) {
+            val refreshRes = supabaseAuthService.refreshToken(refreshTokenStr)
+            val newAuth = refreshRes.getOrNull()
+            if (newAuth?.access_token != null) {
+                token = newAuth.access_token
+                val userId = getSavedSessionUserId() ?: ""
+                val email = getSavedSessionEmail() ?: ""
+                val fullName = sessionPrefs.getString("session_full_name", "") ?: ""
+                val role = sessionPrefs.getString("session_role", "") ?: ""
+                val newRefresh = newAuth.refresh_token ?: refreshTokenStr
+                saveSession(userId, email, token, fullName, role, newRefresh)
+                android.util.Log.d("EduRepository", "Successfully refreshed Officer session token.")
+            } else {
+                android.util.Log.w("EduRepository", "Token refresh attempted but failed or returned null, using saved token.")
+            }
+        }
+        return token
+    }
+
     suspend fun createAccount(
         email: String,
         password: String,
@@ -378,7 +415,7 @@ class EduRepository(context: Context) {
         schoolName: String?,
         udiseNumber: String?
     ): Result<Boolean> {
-        val token = getSavedSessionToken()
+        val token = refreshCurrentSessionIfNeeded() ?: getSavedSessionToken()
         val result = supabaseAuthService.createAccount(
             email = email,
             password = password,

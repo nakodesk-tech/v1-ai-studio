@@ -395,6 +395,54 @@ class SupabaseAuthService {
         }
     }
 
+    suspend fun refreshToken(refreshTokenStr: String): Result<SupabaseAuthResponse> = withContext(Dispatchers.IO) {
+        try {
+            val baseUrl = getBaseUrl()
+            val anonKey = getAnonKey()
+            val url = "$baseUrl/auth/v1/token?grant_type=refresh_token"
+
+            val jsonBody = """
+                {
+                  "refresh_token": "${escapeJson(refreshTokenStr)}"
+                }
+            """.trimIndent()
+
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            val requestBody = jsonBody.toRequestBody(mediaType)
+
+            val request = Request.Builder()
+                .url(url)
+                .post(requestBody)
+                .addHeader("apikey", anonKey)
+                .addHeader("Authorization", "Bearer $anonKey")
+                .addHeader("Content-Type", "application/json")
+                .build()
+
+            Log.d("SupabaseAuth", "Attempting refresh_token grant at $url")
+
+            client.newCall(request).execute().use { response ->
+                val responseBodyStr = response.body?.string() ?: ""
+                Log.d("SupabaseAuth", "RefreshToken Response Code: ${response.code}")
+
+                if (response.isSuccessful) {
+                    val parsed = jsonAdapter.fromJson(responseBodyStr)
+                    if (parsed?.access_token != null) {
+                        Result.success(parsed)
+                    } else {
+                        Result.failure(Exception("Invalid refresh token response from Supabase."))
+                    }
+                } else {
+                    val errorParsed = try { jsonAdapter.fromJson(responseBodyStr) } catch (e: Exception) { null }
+                    val errMsg = errorParsed?.message ?: errorParsed?.error_description ?: "Token refresh failed (Code ${response.code})"
+                    Result.failure(Exception(errMsg))
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("SupabaseAuth", "refreshToken Exception", e)
+            Result.failure(e)
+        }
+    }
+
     suspend fun createAccount(
         email: String,
         password: String,
@@ -405,12 +453,18 @@ class SupabaseAuthService {
         accessToken: String? = null
     ): Result<Boolean> = withContext(Dispatchers.IO) {
         try {
+            if (accessToken.isNullOrBlank()) {
+                Log.e("SupabaseAuth", "createAccount failed: Officer access token is missing or blank.")
+                return@withContext Result.failure(Exception("Officer access token is missing. Please sign in again."))
+            }
+
             val baseUrl = getBaseUrl()
             val anonKey = getAnonKey()
-            val authHeader = if (!accessToken.isNullOrBlank()) "Bearer $accessToken" else "Bearer $anonKey"
             val mediaType = "application/json; charset=utf-8".toMediaType()
 
-            // 1. Attempt secure account creation via Edge Function: /functions/v1/create-user
+            // Safe diagnostic logging: indicates token existence/length, NEVER logs actual token
+            Log.d("SupabaseAuth", "Officer access token present: true (length: ${accessToken.length})")
+
             val edgeUrl = "$baseUrl/functions/v1/create-user"
             val edgeBody = """
                 {
@@ -418,8 +472,8 @@ class SupabaseAuthService {
                   "password": "${escapeJson(password)}",
                   "full_name": "${escapeJson(fullName)}",
                   "role": "${escapeJson(role)}",
-                  "school_name": ${if (schoolName != null) "\"${escapeJson(schoolName)}\"" else "null"},
-                  "udise_number": ${if (udiseNumber != null) "\"${escapeJson(udiseNumber)}\"" else "null"}
+                  "school_name": ${if (schoolName.isNullOrBlank()) "null" else "\"${escapeJson(schoolName)}\""},
+                  "udise_number": ${if (udiseNumber.isNullOrBlank()) "null" else "\"${escapeJson(udiseNumber)}\""}
                 }
             """.trimIndent()
 
@@ -427,58 +481,25 @@ class SupabaseAuthService {
                 .url(edgeUrl)
                 .post(edgeBody.toRequestBody(mediaType))
                 .addHeader("apikey", anonKey)
-                .addHeader("Authorization", authHeader)
+                .addHeader("Authorization", "Bearer $accessToken")
                 .addHeader("Content-Type", "application/json")
                 .build()
 
-            Log.d("SupabaseAuth", "Attempting createAccount via Edge Function at $edgeUrl")
+            Log.d("SupabaseAuth", "Posting to Edge Function: $edgeUrl")
 
-            try {
-                client.newCall(edgeReq).execute().use { resp ->
-                    val respStr = resp.body?.string() ?: ""
-                    Log.d("SupabaseAuth", "Edge Function response code: ${resp.code}, body: $respStr")
-                    if (resp.isSuccessful) {
-                        return@withContext Result.success(true)
-                    } else if (resp.code != 404 && resp.code != 405) {
-                        val parsedErr = parseErrorMessage(respStr) ?: "Edge Function error (${resp.code})"
-                        return@withContext Result.failure(Exception(parsedErr))
-                    }
+            client.newCall(edgeReq).execute().use { resp ->
+                val respStr = resp.body?.string() ?: ""
+                Log.d("SupabaseAuth", "Edge Function response code: ${resp.code}, body: $respStr")
+
+                if (resp.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    // Display exact HTTP status code and response body from create-user
+                    val errMessage = "HTTP status: ${resp.code} ${resp.message}\nResponse: $respStr"
+                    Log.e("SupabaseAuth", "Edge Function create-user failed: $errMessage")
+                    Result.failure(Exception(errMessage))
                 }
-            } catch (e: Exception) {
-                Log.w("SupabaseAuth", "Edge Function call failed, falling back to Auth SignUp API", e)
             }
-
-            // 2. Fallback: Standard Supabase Auth SignUp API
-            val fallbackUdise = udiseNumber ?: email.substringBefore("@")
-            val signUpRes = signUp(
-                email = email,
-                password = password,
-                udiseCode = fallbackUdise,
-                schoolName = schoolName ?: "",
-                hmName = fullName,
-                phone = "",
-                role = role
-            )
-
-            if (signUpRes.isFailure) {
-                val err = signUpRes.exceptionOrNull()?.message ?: "Supabase registration failed."
-                return@withContext Result.failure(Exception(err))
-            }
-
-            val authResp = signUpRes.getOrNull()
-            val createdId = authResp?.user?.id
-
-            if (!createdId.isNullOrBlank()) {
-                updateUserProfile(
-                    userId = createdId,
-                    fullName = fullName,
-                    schoolName = schoolName,
-                    udiseNumber = udiseNumber,
-                    accessToken = accessToken
-                )
-            }
-
-            Result.success(true)
         } catch (e: Exception) {
             Log.e("SupabaseAuth", "createAccount Exception", e)
             Result.failure(e)

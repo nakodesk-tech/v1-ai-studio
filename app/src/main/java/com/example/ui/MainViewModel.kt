@@ -495,8 +495,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String = "") {
         viewModelScope.launch {
+            _isSyncingUsers.value = true
             repository.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
-            _events.emit(UIEvent.ShowToast("User details updated for $udiseCode."))
+            repository.syncUsersFromSupabase()
+            _isSyncingUsers.value = false
+            _events.emit(UIEvent.ShowToast("User profile updated successfully in Supabase."))
         }
     }
 

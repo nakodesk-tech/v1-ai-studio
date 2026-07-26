@@ -1083,13 +1083,15 @@ fun ProfileSyncScreen(
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Text(usr.headmasterName, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                                val displayUdise = usr.udiseNumber.ifBlank { usr.udiseCode }
-                                                Text("${if (usr.role == "OFFICER") "OFFICER ID" else "UDISE Number"}: $displayUdise", fontSize = 11.sp, color = ForestDarkGreen, fontWeight = FontWeight.Bold)
-                                                Text(usr.schoolName, fontSize = 11.sp, color = TextSecondary)
-                                                if (usr.email.isNotBlank()) {
-                                                    Text("Email: ${usr.email}", fontSize = 11.sp, color = TextMuted)
-                                                }
+                                                val displaySchoolName = if (usr.schoolName.isBlank() || usr.schoolName == "School Portal" || usr.schoolName == "District Office") "Not assigned" else usr.schoolName
+                                                val displayUdise = if (usr.udiseNumber.isBlank()) "Not assigned" else usr.udiseNumber
+                                                val displayEmail = if (usr.email.isBlank()) "Not assigned" else usr.email
+                                                val displayName = usr.headmasterName.ifBlank { "Not assigned" }
+
+                                                Text("School Name: $displaySchoolName", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = TextDarkPrimary)
+                                                Text("HM / User Name: $displayName", fontSize = 12.sp, fontWeight = FontWeight.Medium, color = TextDarkPrimary)
+                                                Text("UDISE Number: $displayUdise", fontSize = 11.sp, color = ForestDarkGreen, fontWeight = FontWeight.Bold)
+                                                Text("Email: $displayEmail", fontSize = 11.sp, color = TextMuted)
                                             }
 
                                             Surface(
@@ -1199,11 +1201,10 @@ fun ProfileSyncScreen(
         editingUser?.let { usrToEdit ->
             var editName by remember(usrToEdit) { mutableStateOf(usrToEdit.headmasterName) }
             var editPhone by remember(usrToEdit) { mutableStateOf(usrToEdit.phone) }
-            var editEmail by remember(usrToEdit) { mutableStateOf(usrToEdit.email) }
-            var editSchoolName by remember(usrToEdit) { mutableStateOf(usrToEdit.schoolName) }
-            var editUdiseNumber by remember(usrToEdit) {
-                mutableStateOf(usrToEdit.udiseNumber.ifBlank { if (usrToEdit.udiseCode.length <= 15 && !usrToEdit.udiseCode.startsWith("0000")) usrToEdit.udiseCode else "" })
+            var editSchoolName by remember(usrToEdit) {
+                mutableStateOf(if (usrToEdit.schoolName == "School Portal" || usrToEdit.schoolName == "District Office") "" else usrToEdit.schoolName)
             }
+            var editUdiseNumber by remember(usrToEdit) { mutableStateOf(usrToEdit.udiseNumber) }
 
             AlertDialog(
                 onDismissRequest = { editingUser = null },
@@ -1221,43 +1222,41 @@ fun ProfileSyncScreen(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
-                            value = editUdiseNumber,
-                            onValueChange = { editUdiseNumber = it },
-                            label = { Text("UDISE Number *") },
-                            singleLine = true,
-                            colors = dialogFieldColors,
-                            modifier = Modifier.fillMaxWidth().testTag("input_edit_udise")
-                        )
-                        OutlinedTextField(
                             value = editName,
                             onValueChange = { editName = it },
                             label = { Text("Full Name *") },
                             singleLine = true,
                             colors = dialogFieldColors,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().testTag("input_edit_fullname")
                         )
                         OutlinedTextField(
                             value = editSchoolName,
                             onValueChange = { editSchoolName = it },
-                            label = { Text("School / Office Name") },
+                            label = { Text("School Name") },
                             singleLine = true,
                             colors = dialogFieldColors,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().testTag("input_edit_school_name")
                         )
                         OutlinedTextField(
-                            value = editPhone,
-                            onValueChange = { editPhone = it },
-                            label = { Text("Phone") },
+                            value = editUdiseNumber,
+                            onValueChange = { editUdiseNumber = it },
+                            label = { Text("UDISE Number") },
                             singleLine = true,
                             colors = dialogFieldColors,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier.fillMaxWidth().testTag("input_edit_udise")
                         )
                         OutlinedTextField(
-                            value = editEmail,
-                            onValueChange = { editEmail = it },
-                            label = { Text("Email") },
+                            value = usrToEdit.email,
+                            onValueChange = {},
+                            enabled = false,
+                            label = { Text("Email (Auth - Read Only)") },
                             singleLine = true,
-                            colors = dialogFieldColors,
+                            colors = OutlinedTextFieldDefaults.colors(
+                                disabledTextColor = TextSecondary,
+                                disabledBorderColor = SurfaceCardBorder,
+                                disabledLabelColor = TextMuted,
+                                disabledContainerColor = SurfaceWhite
+                            ),
                             modifier = Modifier.fillMaxWidth()
                         )
                     }
@@ -1265,7 +1264,7 @@ fun ProfileSyncScreen(
                 confirmButton = {
                     Button(
                         onClick = {
-                            onUpdateUserInfo(usrToEdit.udiseCode, editName, editPhone, editEmail, editSchoolName, editUdiseNumber)
+                            onUpdateUserInfo(usrToEdit.udiseCode, editName, editPhone, usrToEdit.email, editSchoolName, editUdiseNumber)
                             editingUser = null
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),

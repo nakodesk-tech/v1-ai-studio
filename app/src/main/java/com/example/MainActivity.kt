@@ -305,8 +305,8 @@ fun MainAppScreen(
                             onDeleteUser = { targetUserId, onSuccess, onError ->
                                 viewModel.deleteUser(targetUserId, onSuccess, onError)
                             },
-                            onUpdateUserInfo = { udiseCode, name, phone, email, schoolName, udiseNumber ->
-                                viewModel.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
+                            onUpdateUserInfo = { udiseCode, name, phone, email, schoolName, udiseNumber, onSuccess, onError ->
+                                viewModel.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber, onSuccess, onError)
                             },
                             onLogout = {
                                 viewModel.logout()

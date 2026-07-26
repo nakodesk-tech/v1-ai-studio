@@ -53,7 +53,7 @@ fun ProfileSyncScreen(
     onChangePassword: (oldPass: String, newPass: String, confirmPass: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _ -> },
     onResetUserPassword: (targetUserId: String, newPass: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _ -> },
     onDeleteUser: (targetUserId: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _ -> },
-    onUpdateUserInfo: (udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String) -> Unit = { _, _, _, _, _, _ -> },
+    onUpdateUserInfo: (udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String, onSuccess: () -> Unit, onError: (String) -> Unit) -> Unit = { _, _, _, _, _, _, _, _ -> },
     onLogout: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
@@ -1387,9 +1387,11 @@ fun ProfileSyncScreen(
                 mutableStateOf(if (usrToEdit.schoolName == "School Portal" || usrToEdit.schoolName == "District Office") "" else usrToEdit.schoolName)
             }
             var editUdiseNumber by remember(usrToEdit) { mutableStateOf(usrToEdit.udiseNumber) }
+            var isSaving by remember { mutableStateOf(false) }
+            var editError by remember { mutableStateOf<String?>(null) }
 
             AlertDialog(
-                onDismissRequest = { editingUser = null },
+                onDismissRequest = { if (!isSaving) editingUser = null },
                 title = { Text(if (isOfficerToEdit) "Edit Officer Profile" else "Edit School User Profile", fontSize = 16.sp, fontWeight = FontWeight.Bold) },
                 text = {
                     val dialogFieldColors = OutlinedTextFieldDefaults.colors(
@@ -1408,6 +1410,7 @@ fun ProfileSyncScreen(
                             onValueChange = { editName = it },
                             label = { Text("Full Name *") },
                             singleLine = true,
+                            enabled = !isSaving,
                             colors = dialogFieldColors,
                             modifier = Modifier.fillMaxWidth().testTag("input_edit_fullname")
                         )
@@ -1417,6 +1420,7 @@ fun ProfileSyncScreen(
                                 onValueChange = { editSchoolName = it },
                                 label = { Text("School Name *") },
                                 singleLine = true,
+                                enabled = !isSaving,
                                 colors = dialogFieldColors,
                                 modifier = Modifier.fillMaxWidth().testTag("input_edit_school_name")
                             )
@@ -1425,6 +1429,7 @@ fun ProfileSyncScreen(
                                 onValueChange = { editUdiseNumber = it },
                                 label = { Text("UDISE Number *") },
                                 singleLine = true,
+                                enabled = !isSaving,
                                 colors = dialogFieldColors,
                                 modifier = Modifier.fillMaxWidth().testTag("input_edit_udise")
                             )
@@ -1443,24 +1448,71 @@ fun ProfileSyncScreen(
                             ),
                             modifier = Modifier.fillMaxWidth()
                         )
+
+                        editError?.let { err ->
+                            Surface(
+                                color = Color(0xFFFFEBEE),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = err,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFFC62828),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
                     }
                 },
                 confirmButton = {
                     Button(
                         onClick = {
+                            if (editName.isBlank()) {
+                                editError = "Full Name cannot be empty."
+                                return@Button
+                            }
+                            if (!isOfficerToEdit && editSchoolName.isBlank()) {
+                                editError = "School Name cannot be empty."
+                                return@Button
+                            }
+                            isSaving = true
+                            editError = null
                             val finalSchoolName = if (isOfficerToEdit) usrToEdit.schoolName else editSchoolName
                             val finalUdiseNumber = if (isOfficerToEdit) usrToEdit.udiseNumber else editUdiseNumber
-                            onUpdateUserInfo(usrToEdit.udiseCode, editName, editPhone, usrToEdit.email, finalSchoolName, finalUdiseNumber)
-                            editingUser = null
+                            onUpdateUserInfo(
+                                usrToEdit.udiseCode,
+                                editName,
+                                editPhone,
+                                usrToEdit.email,
+                                finalSchoolName,
+                                finalUdiseNumber,
+                                {
+                                    isSaving = false
+                                    editingUser = null
+                                },
+                                { err ->
+                                    isSaving = false
+                                    editError = err
+                                }
+                            )
                         },
+                        enabled = !isSaving,
                         colors = ButtonDefaults.buttonColors(containerColor = ForestDarkGreen),
                         modifier = Modifier.testTag("btn_save_user_edit")
                     ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                        }
                         Text("Save Changes", fontWeight = FontWeight.Bold)
                     }
                 },
                 dismissButton = {
-                    TextButton(onClick = { editingUser = null }) { Text("Cancel") }
+                    TextButton(
+                        onClick = { editingUser = null },
+                        enabled = !isSaving
+                    ) { Text("Cancel") }
                 },
                 shape = RoundedCornerShape(20.dp)
             )

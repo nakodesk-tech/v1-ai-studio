@@ -76,7 +76,6 @@ class EduRepository(context: Context) {
         )
 
         if (res.isSuccess) {
-            userDao.resetUserPassword(targetUserId, newPassword)
             return Result.success(true)
         } else {
             val err = res.exceptionOrNull()?.message ?: "Failed to reset password on Supabase."
@@ -94,7 +93,6 @@ class EduRepository(context: Context) {
 
         if (res.isSuccess) {
             userDao.deleteUser(targetUserId)
-            schoolDao.deleteSchool(targetUserId)
             syncUsersFromSupabase()
             return Result.success(true)
         } else {
@@ -116,7 +114,7 @@ class EduRepository(context: Context) {
         schoolName: String,
         udiseNumber: String = ""
     ): Result<Boolean> {
-        val token = getSavedSessionToken()
+        val token = refreshCurrentSessionIfNeeded() ?: getSavedSessionToken()
         val supabaseResult = supabaseAuthService.updateUserProfile(
             userId = udiseCode,
             fullName = name,

@@ -599,7 +599,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateUserInfo(udiseCode: String, name: String, phone: String, email: String, schoolName: String, udiseNumber: String = "") {
+    fun updateUserInfo(
+        udiseCode: String,
+        name: String,
+        phone: String,
+        email: String,
+        schoolName: String,
+        udiseNumber: String = "",
+        onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {}
+    ) {
         viewModelScope.launch {
             _isSyncingUsers.value = true
             val result = repository.updateUserInfo(udiseCode, name, phone, email, schoolName, udiseNumber)
@@ -611,12 +620,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 _isSyncingUsers.value = false
-                _events.emit(UIEvent.ShowToast("User profile updated successfully in Supabase."))
+                _events.emit(UIEvent.ShowToast("Profile updated successfully"))
+                onSuccess()
             } else {
                 _isSyncingUsers.value = false
                 val err = result.exceptionOrNull()?.message ?: "Failed to update user profile in Supabase."
                 android.util.Log.e("MainViewModel", "updateUserInfo error: $err")
                 _events.emit(UIEvent.ShowToast("Error: $err"))
+                onError(err)
             }
         }
     }
